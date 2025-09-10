@@ -1,15 +1,15 @@
 {
   "files": {
     "main.css": "/MeetVerse/static/css/main.abfc9c2d.css",
-    "main.js": "/MeetVerse/static/js/main.d29852d9.js",
+    "main.js": "/MeetVerse/static/js/main.57b17665.js",
     "static/js/453.a3c1d153.chunk.js": "/MeetVerse/static/js/453.a3c1d153.chunk.js",
     "index.html": "/MeetVerse/index.html",
     "main.abfc9c2d.css.map": "/MeetVerse/static/css/main.abfc9c2d.css.map",
-    "main.d29852d9.js.map": "/MeetVerse/static/js/main.d29852d9.js.map",
+    "main.57b17665.js.map": "/MeetVerse/static/js/main.57b17665.js.map",
     "453.a3c1d153.chunk.js.map": "/MeetVerse/static/js/453.a3c1d153.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.abfc9c2d.css",
-    "static/js/main.d29852d9.js"
+    "static/js/main.57b17665.js"
   ]
 }
