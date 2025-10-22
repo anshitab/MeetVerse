@@ -3,5 +3,8 @@
     "axios": "^1.11.0",
     "build": "^0.1.4",
     "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0"
   }
 }

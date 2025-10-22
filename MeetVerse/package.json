@@ -1,0 +1,32 @@
+{
+  "name": "meetverse",
+  "version": "1.0.0",
+  "description": "A modern video conferencing application with MongoDB backend",
+  "scripts": {
+    "start": "node start-dev.js",
+    "start:backend": "cd server && npm run dev",
+    "start:frontend": "cd client && npm start",
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install",
+    "test:integration": "node test-integration.js",
+    "test:remote": "node test-remote-connection.js",
+    "setup": "cd server && npm run install-deps && cd ../client && npm install"
+  },
+  "dependencies": {
+    "axios": "^1.11.0",
+    "build": "^0.1.4",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0"
+  },
+  "keywords": [
+    "video-conferencing",
+    "webrtc",
+    "mongodb",
+    "socket.io",
+    "react",
+    "node.js"
+  ],
+  "author": "MeetVerse Team",
+  "license": "MIT"
+}

@@ -1,14 +1,20 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
 import { useParams } from 'react-router-dom';
+import WebRTCManager from './WebRTCManager';
+import { CONNECTION_STATES } from './webrtc-config';
 
 function MeetingPage() {
   const { meetingId } = useParams();
   const [message, setMessage] = useState('');
   const [chatMessages, setChatMessages] = useState([]);
+  const [translatedPreview, setTranslatedPreview] = useState('');
+  const previewTimerRef = useRef(null);
   const [socket, setSocket] = useState(null);
   const [selectedLanguage, setSelectedLanguage] = useState('en');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [split, setSplit] = useState(() => {
     try { return Number(localStorage.getItem('mv_split')) || 65; } catch { return 65; }
   }); // percentage for left panel width
@@ -33,7 +39,10 @@ function MeetingPage() {
   // --- WEBRTC STATES AND REFS ---
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
-  const peerConnection = useRef(null); // Use useRef to persist RTCPeerConnection
+  const [connectionState, setConnectionState] = useState(CONNECTION_STATES.NEW);
+  const [connectionQuality, setConnectionQuality] = useState('unknown');
+  const [connectionError, setConnectionError] = useState(null);
+  const webrtcManager = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -48,7 +57,7 @@ function MeetingPage() {
 
   const revertToCamera = useCallback(async () => {
     try {
-      const pc = peerConnection.current;
+      const pc = webrtcManager.current?.peerConnection;
       const camTrack = (originalVideoTrackRef.current) || (localStreamRef.current || localStream)?.getVideoTracks()?.[0] || null;
       if (pc && camTrack) {
         const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
@@ -117,7 +126,9 @@ function MeetingPage() {
     newSocket.on('connect', () => {
       console.log('✅ Connected to server:', newSocket.id);
       if (meetingId) {
-        newSocket.emit('join-room', meetingId, 'Guest');
+        const storedUser = (()=>{ try { return JSON.parse(localStorage.getItem('mv_user')||'null'); } catch { return null; } })();
+        const username = (storedUser && storedUser.username) || (storedUser && storedUser.name) || 'Guest';
+        newSocket.emit('join-room', meetingId, username);
       }
     });
 
@@ -134,6 +145,8 @@ function MeetingPage() {
         }
         return [...prevMessages, data];
       });
+      // Increment unread if chat is not open
+      if (!isChatOpen) setUnreadChatCount(c => c + 1);
     });
 
     // --- Room-scoped documents sync ---
@@ -162,40 +175,10 @@ function MeetingPage() {
         timestamp: ts,
         meetingId
       }]);
+      if (!isChatOpen) setUnreadChatCount(c => c + 1);
     });
 
-    // --- WEBRTC SIGNALING LISTENERS ---
-    newSocket.on('offer', async (offer) => {
-      console.log('Received offer:', offer);
-      if (peerConnection.current && localStream) {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer = await peerConnection.current.createAnswer();
-        await peerConnection.current.setLocalDescription(answer);
-        newSocket.emit('answer', { meetingId, answer });
-        console.log('Sent answer:', answer); // Log the sent answer
-      } else {
-        console.warn('Cannot process offer: peerConnection not ready or localStream not obtained yet.');
-      }
-    });
-
-    newSocket.on('answer', async (answer) => {
-      console.log('Received answer:', answer);
-      if (peerConnection.current) {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(answer));
-      }
-    });
-
-    newSocket.on('ice-candidate', async (candidate) => {
-      console.log('Received ICE candidate:', candidate);
-      if (peerConnection.current) {
-        try {
-          await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {
-          console.error('Error adding received ICE candidate:', e);
-        }
-      }
-    });
-    // --- END WEBRTC SIGNALING LISTENERS ---
+    // WebRTC signaling is now handled by WebRTCManager
 
     // Cleanup function for socket and media streams
     return () => {
@@ -209,9 +192,9 @@ function MeetingPage() {
         ls.getTracks().forEach(track => track.stop()); // Stop camera/mic
         console.log('Local stream tracks stopped.');
       }
-      if (peerConnection.current) {
-        peerConnection.current.close(); // Close peer connection
-        console.log('Peer connection closed.');
+      if (webrtcManager.current) {
+        webrtcManager.current.cleanup(); // Cleanup WebRTC connection
+        console.log('WebRTC connection cleaned up.');
       }
     };
   }, [meetingId]); // Reconnect if meeting changes
@@ -261,11 +244,68 @@ function MeetingPage() {
   // TTS removed: no speech side-effects
 
 
-  // --- WEBRTC INITIALIZATION useEffect (Corrected Logic) ---
-  // This useEffect will trigger when 'socket' state is updated and 'peerConnection.current' is null.
-  // It ensures setupWebRTC runs once to initialize peer connection and get media.
+  // Robust media acquisition with fallbacks for NotReadableError (busy device)
+  const getMediaWithFallbacks = useCallback(async () => {
+    const defaultConstraints = {
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30 }
+      },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    };
+
+    // 1) Try default constraints
+    try {
+      return await navigator.mediaDevices.getUserMedia(defaultConstraints);
+    } catch (e) {
+      if (e && e.name !== 'NotReadableError') throw e;
+    }
+
+    // 2) Enumerate devices and try specific camera/mic pairs
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === 'videoinput');
+      const mics = devices.filter(d => d.kind === 'audioinput');
+      for (const cam of cams) {
+        for (const mic of (mics.length ? mics : [null])) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+              video: { deviceId: { exact: cam.deviceId } },
+              audio: mic ? { deviceId: { exact: mic.deviceId } } : true
+            });
+            return stream;
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
+    // 3) Audio-only fallback
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (_) {}
+
+    // 4) Video-only fallback (pick any camera if possible)
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === 'videoinput');
+      if (cams.length) {
+        return await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: cams[0].deviceId } } });
+      }
+      // If no cameras listed, try generic video: true
+      return await navigator.mediaDevices.getUserMedia({ video: true });
+    } catch (e) {
+      throw e; // still failing -> likely OS/device lock
+    }
+  }, []);
+
+  // --- WEBRTC INITIALIZATION useEffect  ---
   const setupWebRTC = useCallback(async () => {
-    console.log('setupWebRTC function started.'); // Debug log
+    console.log('setupWebRTC function started.');
     try {
       // Guard: getUserMedia requires a secure context (HTTPS or localhost)
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -274,81 +314,61 @@ function MeetingPage() {
         setLocalStream(null);
         return;
       }
-      console.log('Attempting to get user media (camera/mic)...'); // Debug log
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      console.log('User media stream obtained successfully:', stream); // THIS IS THE KEY LOG!
+      
+      console.log('Attempting to get user media (camera/mic)...');
+      const stream = await getMediaWithFallbacks();
+      console.log('User media stream obtained successfully:', stream);
 
-      setLocalStream(stream); // Set local stream in state, will trigger the dedicated useEffect for local video display
+      setLocalStream(stream);
 
-
-      // Create a new RTCPeerConnection
-      console.log('Creating RTCPeerConnection...'); // Debug log
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-        ],
-      });
-      peerConnection.current = pc; // Store in ref
-      console.log('RTCPeerConnection created:', pc); // Debug log
-
-      // Add local tracks to the peer connection
-      stream.getTracks().forEach(track => {
-        pc.addTrack(track, stream);
-        console.log('Added track:', track.kind, 'to peer connection.'); // Debug log
+      // Initialize WebRTC Manager
+      webrtcManager.current = new WebRTCManager(socket, meetingId);
+      
+      // Set up event handlers
+      webrtcManager.current.setOnConnectionStateChange((state) => {
+        console.log('Connection state changed:', state);
+        setConnectionState(state);
       });
 
-      // Handle incoming remote tracks
-      pc.ontrack = (event) => {
-        console.log('Remote track received:', event.streams[0]);
-        setRemoteStream(event.streams[0]); // Set remote stream in state
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.streams[0];
-          remoteVideoRef.current.play().catch(e => console.error("Error playing remote video:", e));
-        }
-      };
+      webrtcManager.current.setOnRemoteStream((stream) => {
+        console.log('Remote stream received:', stream);
+        setRemoteStream(stream);
+      });
 
-      // Handle ICE candidates (network information)
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          console.log('Sending ICE candidate:', event.candidate);
-          socket.emit('ice-candidate', { meetingId, candidate: event.candidate });
-        }
-      };
+      webrtcManager.current.setOnError((error) => {
+        console.error('WebRTC Error:', error);
+        setConnectionError(error.message);
+      });
 
-      // Handle negotiation needed (when peer connection state changes, like adding tracks)
-      pc.onnegotiationneeded = async () => {
-        console.log('Negotiation needed: scheduling offer creation...');
-        // Added a small timeout here to allow initial setup to complete before sending offer
-        setTimeout(async () => {
-            try {
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-                socket.emit('offer', { meetingId, offer });
-                console.log('Sending offer after delay:', offer);
-            } catch (e) {
-                console.error('Error creating or sending offer during negotiation (after delay):', e);
-            }
-        }, 500); // 500ms delay
-      };
+      webrtcManager.current.setOnStats((stats) => {
+        setConnectionQuality(stats.quality);
+        console.log('Connection stats:', stats);
+      });
+
+      // Initialize the connection
+      const success = await webrtcManager.current.initialize(stream);
+      if (!success) {
+        throw new Error('Failed to initialize WebRTC connection');
+      }
 
     } catch (error) {
       console.error('FATAL ERROR: Error accessing media devices or setting up WebRTC:', error);
       alert(`Could not access camera/microphone: ${error.name || error.message}. Please ensure they are not in use and permissions are granted in your browser and OS settings.`);
-      setLocalStream(null); // Reset localStream state on error
+      setLocalStream(null);
+      setConnectionError(error.message);
     }
   }, [socket, meetingId]);
 
   useEffect(() => {
-    if (socket && !peerConnection.current) { // Only call setupWebRTC if socket is ready AND peerConnection is NOT initialized
-      console.log('WebRTC setup useEffect: Socket ready and peerConnection not yet initialized. Calling setupWebRTC...');
+    if (socket && !webrtcManager.current) {
+      console.log('WebRTC setup useEffect: Socket ready and WebRTCManager not yet initialized. Calling setupWebRTC...');
       setupWebRTC();
     } else if (!socket) {
       console.log('WebRTC setup useEffect: Socket not ready yet.');
-    } else if (peerConnection.current) {
-      console.log('WebRTC setup useEffect: PeerConnection already established, skipping setupWebRTC.');
+    } else if (webrtcManager.current) {
+      console.log('WebRTC setup useEffect: WebRTCManager already established, skipping setupWebRTC.');
     }
-  }, [socket, setupWebRTC]); // Include setupWebRTC to satisfy exhaustive-deps
+  }, [socket, setupWebRTC]);
 
 
   const sendMessage = () => {
@@ -377,6 +397,7 @@ function MeetingPage() {
 
       // Clear input
       setMessage('');
+      setTranslatedPreview('');
     }
   };
   const endMeeting = () => {
@@ -389,9 +410,9 @@ function MeetingPage() {
         localStream.getTracks().forEach(track => track.stop());
       }
     
-      // Close peer connection
-      if (peerConnection.current) {
-        peerConnection.current.close();
+      // Cleanup WebRTC connection
+      if (webrtcManager.current) {
+        webrtcManager.current.cleanup();
       }
     
       // Redirect to home
@@ -433,6 +454,31 @@ function MeetingPage() {
         </div>
         <div className="row">
           <span className="subtle mono">Room: {meetingId}</span>
+          <div className="row" style={{ gap: '8px', alignItems: 'center' }}>
+            <div className={`connection-status ${connectionState}`} style={{
+              padding: '4px 8px',
+              borderRadius: '4px',
+              fontSize: '0.8em',
+              fontWeight: 'bold',
+              backgroundColor: 
+                connectionState === CONNECTION_STATES.CONNECTED ? '#28c76f' :
+                connectionState === CONNECTION_STATES.CONNECTING ? '#ffb020' :
+                connectionState === CONNECTION_STATES.FAILED ? '#ff4d6d' : '#6c8cff',
+              color: 'white'
+            }}>
+              {connectionState === CONNECTION_STATES.CONNECTED ? '🟢 Connected' :
+               connectionState === CONNECTION_STATES.CONNECTING ? '🟡 Connecting' :
+               connectionState === CONNECTION_STATES.FAILED ? '🔴 Failed' : '⚪ Connecting'}
+            </div>
+            {connectionQuality !== 'unknown' && (
+              <span className="subtle" style={{ fontSize: '0.8em' }}>
+                Quality: {connectionQuality}
+              </span>
+            )}
+          </div>
+          <button className="button" onClick={() => { setIsChatOpen(true); setUnreadChatCount(0); }}>
+            Chat {unreadChatCount > 0 ? `(${unreadChatCount})` : ''}
+          </button>
           <button className="button secondary" onClick={() => setIsSidebarOpen(s => !s)}>
             {isSidebarOpen ? 'Hide Sidebar' : 'Show Sidebar'}
           </button>
@@ -574,45 +620,7 @@ function MeetingPage() {
         )}
       </div>
 
-      <section className="card" style={{ padding: 16, marginTop: 16 }}>
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-end' }}>
-          <div className="stack" style={{ flex: 1 }}>
-            <label htmlFor="language-select" className="subtle">Display Language</label>
-            <select id="language-select" className="input" value={selectedLanguage} onChange={(e) => setSelectedLanguage(e.target.value)}>
-              <option value="en">English</option>
-              <option value="hi">हिंदी (Hindi)</option>
-            </select>
-          </div>
-        </div>
-        <div className="chat" style={{ marginTop: 12 }}>
-          <div className="chat-messages">
-            {chatMessages.map((msg, index) => (
-              <div key={index} style={{ margin: '8px 0', fontSize: '0.95em' }}>
-                <div>
-                  <strong>{msg.id ? msg.id.substring(0, 5) : 'User'} ({msg.timestamp}):</strong>{' '}
-                  <span>{msg.text}</span>
-                </div>
-                {msg.translatedTextEn && (
-                  <div className="subtle" style={{ fontSize: '0.88em', marginTop: 2 }}>
-                    [EN]: {msg.translatedTextEn}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          <div className="chat-input">
-            <input
-              className="input"
-              type="text"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') sendMessage(); }}
-              placeholder="Type your message…"
-            />
-            <button className="button" onClick={sendMessage}>Send</button>
-          </div>
-        </div>
-      </section>
+      {/* Removed Display Language section per request */}
 
       <div className="controls" style={{ marginTop: 12 }}>
         <button className={`control-btn ${isMicOn ? 'active' : ''}`} disabled={!localStream && !localStreamRef.current} onClick={() => {
@@ -638,7 +646,7 @@ function MeetingPage() {
               const screenTrack = screenStream.getVideoTracks()[0];
               screenStreamRef.current = screenStream;
               // Find current video sender
-              const pc = peerConnection.current;
+              const pc = webrtcManager.current?.peerConnection;
               if (pc) {
                 const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
                 const currentVideoTrack = (localStreamRef.current || localStream)?.getVideoTracks()[0] || null;
@@ -768,6 +776,123 @@ function MeetingPage() {
       {downloadUrl && (
         <div className="center" style={{ marginTop: 8 }}>
           <a className="button" href={downloadUrl} download={`meetverse-recording-${Date.now()}.webm`}>Download recording</a>
+        </div>
+      )}
+  
+  {/* Chat Popup Overlay */}
+  {isChatOpen && (
+    <div
+      className="chat-overlay"
+      style={{
+        position: 'fixed',
+        right: 16,
+        top: 72,
+        width: 360,
+        maxWidth: '90vw',
+        height: '70vh',
+        maxHeight: '80vh',
+        background: 'rgba(20,20,20,0.98)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: 12,
+        boxShadow: '0 8px 28px rgba(0,0,0,0.45)',
+        backdropFilter: 'blur(6px)',
+        zIndex: 1000,
+        display: 'flex',
+        flexDirection: 'column'
+      }}
+      role="dialog"
+      aria-label="Chat"
+    >
+      <div className="row" style={{ padding: 12, borderBottom: '1px solid rgba(255,255,255,0.06)', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          <span style={{ fontWeight: 600 }}>Chat</span>
+          <span className="subtle" style={{ fontSize: '0.85em' }}>{chatMessages.length} messages</span>
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          <button className="button secondary" onClick={() => { setIsChatOpen(false); setUnreadChatCount(0); }}>Close</button>
+        </div>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
+        {chatMessages.map((msg, index) => (
+          <div key={index} style={{ margin: '8px 0', fontSize: '0.95em' }}>
+            <div>
+              <strong>{msg.id ? msg.id.substring(0, 5) : 'User'} ({msg.timestamp}):</strong>{' '}
+              <span>{msg.text}</span>
+            </div>
+            {msg.translatedTextEn && (
+              <div className="subtle" style={{ fontSize: '0.88em', marginTop: 2 }}>
+                [EN]: {msg.translatedTextEn}
+              </div>
+            )}
+          </div>
+        ))}
+        {!chatMessages.length && (<span className="subtle">No messages yet.</span>)}
+      </div>
+      <div className="row" style={{ padding: 12, borderTop: '1px solid rgba(255,255,255,0.06)', gap: 8 }}>
+        <input
+          className="input"
+          type="text"
+          value={message}
+          onChange={(e) => {
+            const v = e.target.value;
+            setMessage(v);
+            try { if (previewTimerRef.current) clearTimeout(previewTimerRef.current); } catch(_) {}
+            if (!v.trim()) { setTranslatedPreview(''); return; }
+            previewTimerRef.current = setTimeout(async () => {
+              try {
+                const serverBase = process.env.REACT_APP_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:5000`;
+                const resp = await fetch(`${serverBase}/translate`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ text: v })
+                });
+                if (resp.ok) {
+                  const data = await resp.json();
+                  setTranslatedPreview(String(data.translatedTextEn || ''));
+                }
+              } catch(_) {}
+            }, 350);
+          }}
+          onKeyDown={(e) => { if (e.key === 'Enter') sendMessage(); }}
+          placeholder="Type your message…"
+          style={{ flex: 1 }}
+        />
+        <button className="button" onClick={sendMessage}>Send</button>
+      </div>
+      {translatedPreview && (
+        <div className="subtle" style={{ fontSize: '0.88em', padding: '0 12px 12px 12px' }}>
+          [EN preview]: {translatedPreview}
+        </div>
+      )}
+    </div>
+  )}
+      
+      {/* Connection Error Display */}
+      {connectionError && (
+        <div className="card" style={{ 
+          marginTop: 16, 
+          padding: 16, 
+          backgroundColor: '#ff4d6d', 
+          color: 'white',
+          borderRadius: '8px'
+        }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <strong>Connection Error:</strong> {connectionError}
+            </div>
+            <button 
+              className="button" 
+              style={{ backgroundColor: 'white', color: '#ff4d6d' }}
+              onClick={() => {
+                setConnectionError(null);
+                if (webrtcManager.current) {
+                  webrtcManager.current.reconnect();
+                }
+              }}
+            >
+              Retry
+            </button>
+          </div>
         </div>
       )}
     </div>
