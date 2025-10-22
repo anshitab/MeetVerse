@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import ScheduleMeeting from './ScheduleMeeting';
 import ScheduledMeetings from './ScheduledMeetings';
@@ -9,6 +10,7 @@ function Home() {
   const [hostEmail, setHostEmail] = useState('');
   const [socket, setSocket] = useState(null);
   const [scheduledMeetings, setScheduledMeetings] = useState([]);
+  const navigate = useNavigate();
 
   // Initialize socket connection for meeting reminders
   useEffect(() => {
@@ -41,7 +43,19 @@ function Home() {
     const serverBase = process.env.REACT_APP_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:5000`;
     const res = await fetch(`${serverBase}/create-meet`, { method: 'POST' });
     const data = await res.json();
-    setMeetingLink(data.link);
+    try {
+      const createdUrl = new URL(data.link);
+      const hashPath = `#${createdUrl.pathname}`;
+      const clientOrigin = window.location.origin;
+      const clientBasePath = window.location.pathname.replace(/\/?$/, '/');
+      const hashedUrl = `${clientOrigin}${clientBasePath}${hashPath}`;
+      setMeetingLink(hashedUrl);
+    } catch (_) {
+      // Fallback: assume path "/meet/:id"
+      const pathOnly = (data.link || '').split(window.location.origin)[1] || '/';
+      const hashedUrl = `${window.location.origin}${window.location.pathname.replace(/\/?$/, '/') }#${pathOnly}`;
+      setMeetingLink(hashedUrl);
+    }
   };
 
   const handleMeetingScheduled = (meeting) => {
@@ -57,7 +71,7 @@ function Home() {
           <span>MeetVerse</span>
         </div>
         <div className="row">
-          <a className="button secondary" href="/auth">Login / Signup</a>
+          <Link className="button secondary" to="/auth">Login / Signup</Link>
         </div>
       </header>
 
@@ -115,14 +129,43 @@ function Home() {
               type="url"
               placeholder="Paste meeting link (e.g. http://localhost:3000/meet/abcd)"
               onKeyDown={(e) => {
-                if (e.key === 'Enter') window.location.href = e.target.value;
+                if (e.key === 'Enter') {
+                  const value = String(e.target.value || '').trim();
+                  if (!value) return;
+                  try {
+                    const u = new URL(value);
+                    const match = u.pathname.match(/\/meet\/(.+)$/);
+                    if (match) {
+                      navigate(`/meet/${match[1]}`);
+                      return;
+                    }
+                  } catch (_) {
+                    // not a full URL; maybe they pasted just an id
+                  }
+                  // If they pasted an id or relative path
+                  const m2 = value.match(/^\/?meet\/(.+)$/) || value.match(/^([A-Za-z0-9_-]+)$/);
+                  const id = m2 ? (m2[1] || m2[0]) : '';
+                  if (id) navigate(`/meet/${id}`);
+                }
               }}
             />
             <button
               className="button secondary"
               onClick={() => {
                 const input = document.querySelector('#join input');
-                if (input && input.value) window.location.href = input.value;
+                const value = String(input?.value || '').trim();
+                if (!value) return;
+                try {
+                  const u = new URL(value);
+                  const match = u.pathname.match(/\/meet\/(.+)$/);
+                  if (match) {
+                    navigate(`/meet/${match[1]}`);
+                    return;
+                  }
+                } catch (_) {}
+                const m2 = value.match(/^\/?meet\/(.+)$/) || value.match(/^([A-Za-z0-9_-]+)$/);
+                const id = m2 ? (m2[1] || m2[0]) : '';
+                if (id) navigate(`/meet/${id}`);
               }}
             >Join</button>
           </div>
