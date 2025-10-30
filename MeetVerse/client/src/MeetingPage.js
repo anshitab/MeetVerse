@@ -11,20 +11,18 @@ function MeetingPage() {
   const [translatedPreview, setTranslatedPreview] = useState('');
   const previewTimerRef = useRef(null);
   const [socket, setSocket] = useState(null);
-  const [selectedLanguage, setSelectedLanguage] = useState('en');
+  const [selectedLanguage] = useState('en');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [split, setSplit] = useState(() => {
     try { return Number(localStorage.getItem('mv_split')) || 65; } catch { return 65; }
   }); // percentage for left panel width
-  const [notes, setNotes] = useState(() => localStorage.getItem('mv_notes') || '');
+  const [notes] = useState(() => localStorage.getItem('mv_notes') || '');
   const [docUrl, setDocUrl] = useState('');
   const [docValid, setDocValid] = useState(true);
   const [docError, setDocError] = useState('');
-  const [docs, setDocs] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('mv_docs') || '[]'); } catch { return []; }
-  });
+  const [docs, setDocs] = useState([]);
   const [todoInput, setTodoInput] = useState('');
   const [todos, setTodos] = useState(() => {
     try { return JSON.parse(localStorage.getItem(`mv_todos_${meetingId}`) || '[]'); } catch { return []; }
@@ -39,6 +37,10 @@ function MeetingPage() {
   // --- WEBRTC STATES AND REFS ---
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
+  const [participants, setParticipants] = useState([]); // dynamic roster including self
+  const selfIdRef = useRef('');
+  const usernameRef = useRef('Guest');
+  const [isHost, setIsHost] = useState(false);
   const [connectionState, setConnectionState] = useState(CONNECTION_STATES.NEW);
   const [connectionQuality, setConnectionQuality] = useState('unknown');
   const [connectionError, setConnectionError] = useState(null);
@@ -119,17 +121,44 @@ function MeetingPage() {
   // Main useEffect for Socket.io connection and cleanup
   useEffect(() => {
     console.log('Main App useEffect triggered: Initializing socket.');
-    const serverBase = process.env.REACT_APP_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:5000`;
-    const newSocket = io(serverBase); // Ensure this matches your backend
+    const serverBase = process.env.REACT_APP_SERVER_URL || 'http://127.0.0.1:5000';
+    // Force polling and explicitly set path for cross-browser stability
+    const newSocket = io(serverBase, {
+      transports: ['polling'],
+      path: '/socket.io',
+      withCredentials: true,
+      timeout: 10000,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000
+    });
     setSocket(newSocket);
 
     newSocket.on('connect', () => {
       console.log('✅ Connected to server:', newSocket.id);
       if (meetingId) {
         const storedUser = (()=>{ try { return JSON.parse(localStorage.getItem('mv_user')||'null'); } catch { return null; } })();
-        const username = (storedUser && storedUser.username) || (storedUser && storedUser.name) || 'Guest';
-        newSocket.emit('join-room', meetingId, username);
+        const username = (storedUser && storedUser.username) || (storedUser && storedUser.name) || '';
+        const email = (storedUser && storedUser.email) || '';
+        if (!email) { window.location.href = '/#/auth'; return; }
+        usernameRef.current = username;
+        selfIdRef.current = newSocket.id;
+        // Seed roster with self
+        setParticipants([{ id: newSocket.id, name: username, isSelf: true }]);
+        newSocket.emit('join-room', meetingId, username || 'User', email);
       }
+    });
+    // Roster updates
+    newSocket.on('user-joined', (user) => {
+      setParticipants((prev) => {
+        const exists = prev.some(p => p.id === user.id);
+        if (exists) return prev;
+        return [...prev, { id: user.id, name: user.name || 'Participant' }];
+      });
+    });
+    newSocket.on('user-left', (user) => {
+      setParticipants((prev) => prev.filter(p => p.id !== user.id));
     });
 
     newSocket.on('messageResponse', (data) => {
@@ -147,6 +176,16 @@ function MeetingPage() {
       });
       // Increment unread if chat is not open
       if (!isChatOpen) setUnreadChatCount(c => c + 1);
+    });
+
+    // Receive room role to coordinate WebRTC offerer
+    newSocket.on('room-role', ({ meetingId: mId, isHost: hostFlag }) => {
+      if (mId === meetingId) setIsHost(!!hostFlag);
+    });
+
+    // If backend refuses unauthenticated join
+    newSocket.on('auth-required', () => {
+      window.location.href = '/#/auth';
     });
 
     // --- Room-scoped documents sync ---
@@ -197,7 +236,7 @@ function MeetingPage() {
         console.log('WebRTC connection cleaned up.');
       }
     };
-  }, [meetingId]); // Reconnect if meeting changes
+  }, [meetingId, isChatOpen]); // include isChatOpen to satisfy lint
 
 
   // Dedicated useEffect to handle setting local video stream to ref
@@ -239,6 +278,17 @@ function MeetingPage() {
     } else if (remoteVideoRef.current && !remoteStream) {
       remoteVideoRef.current.srcObject = null;
     }
+  }, [remoteStream]);
+
+  // Attach remote stream to first remote participant entry so carousel knows a stream exists
+  useEffect(() => {
+    if (!remoteStream) return;
+    setParticipants(prev => {
+      const next = prev.map(p => p.isSelf ? p : { ...p });
+      const idx = next.findIndex(p => !p.isSelf);
+      if (idx !== -1) next[idx].hasStream = true;
+      return next;
+    });
   }, [remoteStream]);
 
   // TTS removed: no speech side-effects
@@ -322,7 +372,7 @@ function MeetingPage() {
       setLocalStream(stream);
 
       // Initialize WebRTC Manager
-      webrtcManager.current = new WebRTCManager(socket, meetingId);
+      webrtcManager.current = new WebRTCManager(socket, meetingId, { isOfferer: isHost });
       
       // Set up event handlers
       webrtcManager.current.setOnConnectionStateChange((state) => {
@@ -357,7 +407,7 @@ function MeetingPage() {
       setLocalStream(null);
       setConnectionError(error.message);
     }
-  }, [socket, meetingId]);
+  }, [socket, meetingId, isHost, getMediaWithFallbacks]);
 
   useEffect(() => {
     if (socket && !webrtcManager.current) {
@@ -421,19 +471,12 @@ function MeetingPage() {
     alert("Meeting has ended!");
   };
   
-  const getDisplayMessage = (msg) => {
-    // Updated to use the corrected mocked translation keys from server/index.js
-    if (selectedLanguage === 'en') {
-      return msg.translatedTextEn || msg.text;
-    } else if (selectedLanguage === 'hi') {
-      return msg.translatedTextHi || msg.text;
-    }
-    return msg.text;
-  };
+  // removed unused helper
 
   // --- Sidebar local persistence ---
   useEffect(() => { localStorage.setItem('mv_notes', notes); }, [notes]);
-  useEffect(() => { localStorage.setItem('mv_docs', JSON.stringify(docs)); }, [docs]);
+  // Reset documents when meeting changes; server will send fresh list via 'docs-init'
+  useEffect(() => { setDocs([]); }, [meetingId]);
   useEffect(() => { localStorage.setItem(`mv_todos_${meetingId}`, JSON.stringify(todos)); }, [todos, meetingId]);
   useEffect(() => {
     try {
@@ -453,6 +496,7 @@ function MeetingPage() {
           <span>MeetVerse</span>
         </div>
         <div className="row">
+          <span className="subtle mono">{(() => { try { return (JSON.parse(localStorage.getItem('mv_user')||'null')||{}).username; } catch { return ''; } })() || 'User'}</span>
           <span className="subtle mono">Room: {meetingId}</span>
           <div className="row" style={{ gap: '8px', alignItems: 'center' }}>
             <div className={`connection-status ${connectionState}`} style={{
@@ -482,7 +526,12 @@ function MeetingPage() {
           <button className="button secondary" onClick={() => setIsSidebarOpen(s => !s)}>
             {isSidebarOpen ? 'Hide Sidebar' : 'Show Sidebar'}
           </button>
-          <button className="button danger" onClick={endMeeting}>End</button>
+        <button className="button danger" onClick={() => {
+          if (isHost && socket) {
+            try { socket.emit('meeting-end', { meetingId }); } catch (_) {}
+          }
+          endMeeting();
+        }}>End</button>
         </div>
       </header>
 
@@ -496,18 +545,29 @@ function MeetingPage() {
             ) : (
               <div className="center" style={{ height: '100%' }}><span className="subtle">You</span></div>
             )}
-            <span className="meet-name">You</span>
+            <span className="meet-name">{usernameRef.current || 'You'}</span>
           </div>
           <div className="filmstrip" style={{ marginTop: 12 }}>
-            <div className="thumb">
-              {remoteStream ? (
-                <video ref={remoteVideoRef} autoPlay playsInline onLoadedMetadata={() => {
-                  try { if (remoteVideoRef.current) remoteVideoRef.current.play(); } catch(e) { console.error('Remote video play error:', e); }
-                }} />
-              ) : <div className="center" style={{ height: '100%' }}><span className="subtle">Remote</span></div>}
-              <span className="thumb-name">Remote</span>
-            </div>
-            <div className="thumb" />
+            {participants.map((p, i) => (
+              <div key={p.id} className="thumb">
+                {p.isSelf ? (
+                  localStream ? (
+                    <video autoPlay playsInline muted ref={i===-1?undefined:undefined} /* self preview is main tile already */ />
+                  ) : (
+                    <div className="center" style={{ height: '100%' }}><span className="subtle">You</span></div>
+                  )
+                ) : (
+                  p.hasStream && remoteStream ? (
+                    <video ref={remoteVideoRef} autoPlay playsInline onLoadedMetadata={() => {
+                      try { if (remoteVideoRef.current) remoteVideoRef.current.play(); } catch(e) { console.error('Remote video play error:', e); }
+                    }} />
+                  ) : (
+                    <div className="center" style={{ height: '100%' }}><span className="subtle">{p.name || 'Remote'}</span></div>
+                  )
+                )}
+                <span className="thumb-name">{p.isSelf ? 'You' : (p.name || 'Remote')}</span>
+              </div>
+            ))}
           </div>
           <canvas ref={canvasRef} width={1280} height={720} style={{ display: 'none' }} />
         </section>
@@ -592,7 +652,8 @@ function MeetingPage() {
                   const v = todoInput.trim(); if (!v) return;
                   const palette = ['#6c8cff','#28c76f','#ffb020','#ff4d6d','#a78bfa'];
                   const color = palette[Math.floor(Math.random()*palette.length)];
-                  setTodos(prev => [...prev, { id: Date.now(), text: v, done: false, color }]); setTodoInput('');
+                  const newTodo = { id: String(Date.now()), text: v, done: false, color };
+                  setTodos(prev => [...prev, newTodo]); setTodoInput('');
                 }}>Add</button>
               </div>
               <div className="reminder-list">
@@ -600,7 +661,9 @@ function MeetingPage() {
                   <div key={t.id} className="reminder-card" style={{ borderColor: t.color, background: 'linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.1))' }}>
                     <div className="reminder-left">
                       <span className="dot" style={{ background: t.color }} />
-                      <input type="checkbox" checked={t.done} onChange={() => setTodos(prev => prev.map(x => x.id===t.id?{...x, done:!x.done}:x))} />
+                      <input type="checkbox" checked={t.done} onChange={() => {
+                        setTodos(prev => prev.map(x => x.id===t.id?{...x, done:!x.done}:x));
+                      }} />
                       <span style={{ textDecoration: t.done ? 'line-through' : 'none' }}>{t.text}</span>
                     </div>
                     <div className="row">
@@ -609,7 +672,7 @@ function MeetingPage() {
                           <span key={c} className="swatch" style={{ background: c }} onClick={() => setTodos(prev => prev.map(x => x.id===t.id?{...x, color:c}:x))} />
                         ))}
                       </div>
-                      <button className="button secondary" onClick={() => setTodos(prev => prev.filter(x => x.id!==t.id))}>Remove</button>
+                      <button className="button secondary" onClick={() => { setTodos(prev => prev.filter(x => x.id!==t.id)); }}>Remove</button>
                     </div>
                   </div>
                 ))}

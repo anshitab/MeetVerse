@@ -1,21 +1,36 @@
-require('dotenv').config();
-const express = require('express');
-const http = require('http');
-const https = require('https');
-const fs = require('fs');
-const cors = require('cors');
-const { Server } = require('socket.io');
-const { v4: uuidv4 } = require('uuid');
-const axios = require('axios');
-const cron = require('node-cron');
+import dotenv from 'dotenv';
+import express from 'express';
+import connectDB from './config/database.js';
+import meetingRoutes from './routes/meetingRoutes.js';
+import http from 'http';
+import https from 'https';
+import fs from 'fs';
+import cors from 'cors';
+import { v4 as uuidv4 } from 'uuid';
+import axios from 'axios';
+import cron from 'node-cron';
+import { Server } from 'socket.io';
+import emailRoutes from './routes/emailRoutes.js';
+import { sendMeetingSummary } from './services/emailService.js';
+
+dotenv.config();
+connectDB();
+
+
+// const fs = require('fs');
+// const cors = require('cors');
+// const { v4: uuidv4 } = require('uuid');
+// const axios = require('axios');
+// const cron = require('node-cron');
 
 // Database connection
-const connectDB = require('./config/database');
-const Meeting = require('./models/Meeting');
-const User = require('./models/User');
+// const connectDB = require('./config/database');
+  // const Meeting = require('./models/Meeting');
+  // const User = require('./models/User');
+  import Meeting from './models/Meeting.js';
+  import User from './models/User.js';
 
-// Connect to MongoDB
-connectDB();
+// Connect to MongoDB (already called above)
 
 const app = express();
 
@@ -27,13 +42,9 @@ const allowedOrigins = (process.env.CLIENT_ORIGINS || 'http://localhost:3000')
 const allowAllCors = (process.env.ALLOW_ALL_ORIGINS === 'true') || (process.env.NODE_ENV !== 'production');
 
 app.use(cors({
-  origin: (origin, callback) => {
-    if (allowAllCors) return callback(null, true);
-    if (!origin) return callback(null, true); // allow non-browser or same-origin
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    // allow any origin during local LAN testing if it matches localhost or current machine host
+  origin: allowAllCors ? true : (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
     if (/^http:\/\/localhost:\d+/.test(origin)) return callback(null, true);
     return callback(null, false);
   },
@@ -41,6 +52,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
+
+// Preflight is handled by the CORS middleware above
 
 app.use(express.json());
 
@@ -149,9 +162,7 @@ if (process.env.HTTPS === 'true') {
 
 const io = new Server(server, {
   cors: {
-    origin: (origin, callback) => {
-      // mirror the express CORS logic
-      if (allowAllCors) return callback(null, true);
+    origin: allowAllCors ? true : (origin, callback) => {
       if (!origin) return callback(null, true);
       if (allowedOrigins.includes(origin)) return callback(null, true);
       if (/^http:\/\/localhost:\d+/.test(origin)) return callback(null, true);
@@ -162,9 +173,14 @@ const io = new Server(server, {
   }
 });
 
+// (Email reminder feature removed per request)
+
 app.get('/', (req, res) => {
   res.send('Socket.io server is running.');
 });
+
+// --- API ROUTES ---
+app.use('/api/email', emailRoutes);
 
 // --- LIBRETRANSLATE (Open-source Translation) ---
 // Configure base URL with env LIBRE_TRANSLATE_URL, defaults to public instance
@@ -237,7 +253,60 @@ app.post('/translate', async (req, res) => {
 });
 
 // --- USER AUTH (LIGHTWEIGHT) ---
-const bcrypt = require('bcryptjs');
+import bcrypt from 'bcryptjs';
+
+// Generate a unique username when one isn't provided
+function normalizeUsernameBase(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 20); // leave room for suffix
+}
+
+async function generateUniqueUsername(input) {
+  const email = String(input?.email || '').toLowerCase();
+  const name = String(input?.name || '').trim();
+
+  const localPart = email.includes('@') ? email.split('@')[0] : '';
+  const fromEmail = normalizeUsernameBase(localPart);
+  const fromName = normalizeUsernameBase(name.replace(/\s+/g, '_'));
+
+  const candidates = [fromEmail, fromName, 'user']
+    .filter(Boolean)
+    .map(b => (b.length < 3 ? `user_${b}` : b));
+
+  // Ensure each candidate within limits
+  const baseSet = Array.from(new Set(candidates.map(c => c.slice(0, 20))));
+
+  // Try plain bases first
+  for (const base of baseSet) {
+    if (base && base.length >= 3 && /^[a-z0-9_]{3,24}$/.test(base)) {
+      const exists = await User.findOne({ username: base });
+      if (!exists) return base;
+    }
+  }
+
+  // Try with numeric suffixes
+  for (const base of baseSet) {
+    for (let i = 1; i <= 9999; i++) {
+      const suffix = String(i);
+      const candidate = (base + '_' + suffix).slice(0, 24);
+      if (!/^[a-z0-9_]{3,24}$/.test(candidate)) continue;
+      const exists = await User.findOne({ username: candidate });
+      if (!exists) return candidate;
+    }
+  }
+
+  // Fallback: random
+  while (true) {
+    const rnd = Math.random().toString(36).slice(2, 8);
+    const candidate = `user_${rnd}`;
+    const exists = await User.findOne({ username: candidate });
+    if (!exists) return candidate;
+  }
+}
 
 // Check username availability
 app.get('/auth/username-available/:username', async (req, res) => {
@@ -257,21 +326,30 @@ app.get('/auth/username-available/:username', async (req, res) => {
 app.post('/auth/signup', async (req, res) => {
   try {
     const { email, username, name, password } = req.body || {};
-    if (!email || !username || !password) {
-      return res.status(400).json({ error: 'email, username, password required' });
+    if (!email || !password) {
+      return res.status(400).json({ error: 'email and password are required' });
     }
-    const uname = String(username).toLowerCase();
-    if (!/^[a-z0-9_]{3,24}$/.test(uname)) {
-      return res.status(400).json({ error: 'Invalid username format' });
-    }
-    const existsU = await User.findOne({ username: uname });
-    if (existsU) return res.status(409).json({ error: 'Username already taken' });
-    const existsE = await User.findOne({ email: String(email).toLowerCase() });
+
+    // Enforce email uniqueness first
+    const emailLc = String(email).toLowerCase();
+    const existsE = await User.findOne({ email: emailLc });
     if (existsE) return res.status(409).json({ error: 'Email already registered' });
+
+    // Use provided username if valid and available; otherwise auto-generate one
+    let uname = String(username || '').toLowerCase().trim();
+    if (uname) {
+      if (!/^[a-z0-9_]{3,24}$/.test(uname)) {
+        return res.status(400).json({ error: 'Invalid username format' });
+      }
+      const existsU = await User.findOne({ username: uname });
+      if (existsU) return res.status(409).json({ error: 'Username already taken' });
+    } else {
+      uname = await generateUniqueUsername({ email: emailLc, name: name || '' });
+    }
 
     const passwordHash = await bcrypt.hash(String(password), 10);
     const user = await User.create({
-      email: String(email).toLowerCase(),
+      email: emailLc,
       username: uname,
       name: name || '',
       passwordHash
@@ -280,6 +358,25 @@ app.post('/auth/signup', async (req, res) => {
   } catch (e) {
     console.error('Signup error:', e);
     res.status(500).json({ error: 'Signup failed' });
+  }
+});
+
+// Login (email or username + password)
+app.post('/auth/login', async (req, res) => {
+  try {
+    const { identifier, password } = req.body || {};
+    if (!identifier || !password) {
+      return res.status(400).json({ error: 'identifier and password required' });
+    }
+    const ident = String(identifier).trim().toLowerCase();
+    const user = await User.findOne({ $or: [{ email: ident }, { username: ident }] });
+    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+    const ok = await bcrypt.compare(String(password), user.passwordHash || '');
+    if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+    return res.json({ id: user._id, email: user.email, username: user.username, name: user.name });
+  } catch (e) {
+    console.error('Login error:', e);
+    res.status(500).json({ error: 'Login failed' });
   }
 });
 
@@ -307,11 +404,16 @@ app.post('/create-meet', async (req, res) => {
       hostEmail: 'guest@meetverse.com',
       hostName: 'Guest',
       scheduledTime: new Date(),
+      startTime: new Date(),
       status: 'active'
     });
 
-    await meeting.save();
+    // Save in background to reduce latency; meeting will be created shortly
+    meeting.save().catch((error) => {
+      console.error('Error saving meeting (background):', error);
+    });
 
+    // Respond immediately with the link
     res.json({ link: meetingLink, meetingId });
   } catch (error) {
     console.error('Error creating meeting:', error);
@@ -548,6 +650,9 @@ setInterval(async () => {
   }
 }, 60 * 60 * 1000); // Run every hour
 
+
+app.use('/api/meetings', meetingRoutes);
+
 // Socket.io connection handling
 io.on('connection', async (socket) => {
   console.log('✅ New client connected:', socket.id);
@@ -581,10 +686,22 @@ io.on('connection', async (socket) => {
     }
   });
 
-  socket.on('join-room', async (meetingId, userName) => {
+  socket.on('join-room', async (meetingId, userName, userEmail) => {
     try {
       socket.join(meetingId);
+      socket.data.currentMeetingId = meetingId;
+      socket.data.userName = userName;
+      socket.data.userEmail = userEmail;
       console.log(`${userName} joined room: ${meetingId}`);
+
+      // Enforce login: require a valid user record by email
+      const emailLc = String(userEmail || '').toLowerCase();
+      const userRec = await User.findOne({ email: emailLc });
+      if (!userRec) {
+        socket.emit('auth-required', { error: 'Login required' });
+        try { socket.leave(meetingId); } catch (_) {}
+        return;
+      }
 
       // Find or create meeting
       let meeting = await Meeting.findOne({ meetingId });
@@ -600,13 +717,19 @@ io.on('connection', async (socket) => {
           hostEmail: 'guest@meetverse.com',
           hostName: 'Guest',
           scheduledTime: new Date(),
+          startTime: new Date(),
           status: 'active'
         });
         await meeting.save();
       }
 
+      // Only-one-host logic: first join becomes host (if none yet)
+      if (!meeting.hostSocketId) {
+        await meeting.assignHostIfNone(socket.id, userName);
+      }
+
       // Add participant to meeting
-      await meeting.addParticipant(socket.id, userName);
+      await meeting.addParticipant(socket.id, userName, emailLc);
 
       // Start meeting if it's scheduled
       if (meeting.status === 'scheduled') {
@@ -618,6 +741,9 @@ io.on('connection', async (socket) => {
 
       // Notify others in the room
       socket.to(meetingId).emit('user-joined', { id: socket.id, name: userName });
+      // Tell the joiner whether they are host
+      const isHost = meeting.hostSocketId === socket.id;
+      socket.emit('room-role', { meetingId, isHost, hostName: meeting.hostName });
     } catch (error) {
       console.error('Error joining room:', error);
     }
@@ -650,6 +776,30 @@ io.on('connection', async (socket) => {
     console.log(`📈 Connection quality for meeting ${meetingId}: ${quality} (RTT: ${rtt}ms, Loss: ${packetLoss}%)`);
   });
 
+
+  // --- HOST END MEETING MANUALLY ---
+  socket.on('meeting-end', async ({ meetingId }) => {
+    try {
+      if (!meetingId) return;
+      const meeting = await Meeting.findOne({ meetingId });
+      if (!meeting) return;
+      if (meeting.hostSocketId !== socket.id) {
+        console.warn('Non-host attempted to end meeting');
+        return;
+      }
+      await meeting.endMeeting();
+      try {
+        await sendMeetingSummary(meeting);
+      } catch (e) {
+        console.warn('Follow-up email failed:', e?.message || e);
+      }
+      io.to(meetingId).emit('meeting-ended', { meetingId });
+      try { io.in(meetingId).socketsLeave(meetingId); } catch (_) {}
+    } catch (e) {
+      console.error('Error ending meeting:', e);
+    }
+  });
+
   // --- ROOM-SCOPED DOCUMENT SYNC ---
   socket.on('doc-add', async ({ meetingId, doc }) => {
     try {
@@ -678,6 +828,7 @@ io.on('connection', async (socket) => {
       console.error('Error removing document:', error);
     }
   });
+  // (To-do email and sync feature removed per request)
 
   // --- LIVE STT + TRANSLATE (Voxtral scaffold) ---
   const liveBuffers = new Map(); // key: socket.id -> Float32Array chunks
@@ -760,6 +911,24 @@ io.on('connection', async (socket) => {
       const meetings = await Meeting.find({ 'participants.socketId': socket.id });
       for (const meeting of meetings) {
         await meeting.removeParticipant(socket.id);
+        // If host left, clear host to allow re-assignment
+        await meeting.clearHostIf(socket.id);
+
+        // If everyone left, end meeting and send summary emails
+        if ((meeting.participantCount || 0) === 0 && meeting.status !== 'completed') {
+          await meeting.endMeeting();
+          try {
+            await sendMeetingSummary(meeting);
+          } catch (e) {
+            console.warn('Follow-up email failed:', e?.message || e);
+          }
+        }
+      }
+
+      // Inform peers in the room
+      const roomId = socket.data.currentMeetingId;
+      if (roomId) {
+        socket.to(roomId).emit('user-left', { id: socket.id, name: socket.data.userName || 'User' });
       }
     } catch (error) {
       console.error('Error handling disconnect:', error);
@@ -768,7 +937,7 @@ io.on('connection', async (socket) => {
 });
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   const proto = process.env.HTTPS === 'true' ? 'https' : 'http';
   console.log(`🚀 Server is running on ${proto}://localhost:${PORT}`);
 }); 

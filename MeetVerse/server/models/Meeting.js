@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+import mongoose from 'mongoose';
 
 const meetingSchema = new mongoose.Schema({
   meetingId: {
@@ -32,6 +32,11 @@ const meetingSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  hostSocketId: {
+    type: String,
+    default: '',
+    index: true
+  },
   scheduledTime: {
     type: Date,
     required: true,
@@ -55,6 +60,12 @@ const meetingSchema = new mongoose.Schema({
     socketId: {
       type: String,
       required: true
+    },
+    email: {
+      type: String,
+      default: '',
+      lowercase: true,
+      trim: true
     },
     userId: {
       type: String,
@@ -93,6 +104,37 @@ const meetingSchema = new mongoose.Schema({
       required: true
     },
     addedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  todos: [{
+    id: {
+      type: String,
+      required: true
+    },
+    text: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    done: {
+      type: Boolean,
+      default: false
+    },
+    color: {
+      type: String,
+      default: '#6c8cff'
+    },
+    assignedToEmail: {
+      type: String,
+      default: ''
+    },
+    createdBy: {
+      type: String,
+      default: ''
+    },
+    createdAt: {
       type: Date,
       default: Date.now
     }
@@ -143,7 +185,6 @@ const meetingSchema = new mongoose.Schema({
 // Index for efficient queries
 meetingSchema.index({ hostEmail: 1, scheduledTime: 1 });
 meetingSchema.index({ status: 1, scheduledTime: 1 });
-meetingSchema.index({ createdAt: 1 });
 
 // Virtual for meeting duration
 meetingSchema.virtual('duration').get(function() {
@@ -154,15 +195,32 @@ meetingSchema.virtual('duration').get(function() {
 });
 
 // Method to add participant
-meetingSchema.methods.addParticipant = function(socketId, name) {
+meetingSchema.methods.addParticipant = function(socketId, name, email) {
   const existingParticipant = this.participants.find(p => p.socketId === socketId);
   if (!existingParticipant) {
     this.participants.push({
       socketId,
+      email: (email || '').toLowerCase(),
       name,
       joinedAt: new Date()
     });
     this.participantCount = this.participants.filter(p => !p.leftAt).length;
+  }
+  return this.save();
+};
+
+// Ensure only one host per meeting
+meetingSchema.methods.assignHostIfNone = function(socketId, name) {
+  if (!this.hostSocketId) {
+    this.hostSocketId = socketId;
+    if (!this.hostName || this.hostName === 'Guest') this.hostName = name || this.hostName;
+  }
+  return this.save();
+};
+
+meetingSchema.methods.clearHostIf = function(socketId) {
+  if (this.hostSocketId && this.hostSocketId === socketId) {
+    this.hostSocketId = '';
   }
   return this.save();
 };
@@ -220,4 +278,79 @@ meetingSchema.methods.addChatMessage = function(messageData) {
   return this.save();
 };
 
-module.exports = mongoose.model('Meeting', meetingSchema);
+// --- TODOS ---
+meetingSchema.methods.addTodo = function(todo) {
+  const exists = this.todos.find(t => t.id === todo.id);
+  if (!exists) {
+    this.todos.push({
+      id: todo.id,
+      text: todo.text,
+      done: !!todo.done,
+      color: todo.color || '#6c8cff',
+      assignedToEmail: todo.assignedToEmail || '',
+      createdBy: todo.createdBy || '',
+      createdAt: new Date()
+    });
+  }
+  return this.save();
+};
+
+meetingSchema.methods.toggleTodo = function(id) {
+  const t = this.todos.find(x => x.id === id);
+  if (t) {
+    t.done = !t.done;
+  }
+  return this.save();
+};
+
+meetingSchema.methods.removeTodo = function(id) {
+  this.todos = this.todos.filter(x => x.id !== id);
+  return this.save();
+};
+
+const Meeting = mongoose.model('Meeting', meetingSchema);
+
+// --- Helpers ---
+// Create a scheduled meeting document with normalized fields
+meetingSchema.statics.createScheduled = async function(payload) {
+  const MeetingModel = this;
+  const meetingId = String(payload.meetingId || new mongoose.Types.ObjectId().toHexString().slice(0, 8));
+  const title = String(payload.title || 'Scheduled Meeting').trim();
+  const description = String(payload.description || '').trim();
+  const hostEmail = String(payload.hostEmail || '').toLowerCase();
+  const hostName = String(payload.hostName || 'Host').trim();
+  const scheduledTime = new Date(payload.scheduledTime || Date.now());
+  const meetingLink = String(payload.meetingLink || `${payload.baseUrl || 'http://localhost:3000'}/meet/${meetingId}`);
+
+  const doc = await MeetingModel.create({
+    meetingId,
+    title,
+    description,
+    meetingLink,
+    hostEmail,
+    hostName,
+    scheduledTime,
+    status: 'scheduled'
+  });
+  return doc;
+};
+
+// Add a document URL to the meeting with a generated id if not provided
+meetingSchema.methods.addDocumentUrl = function(url, addedBy, id) {
+  const docId = id || new mongoose.Types.ObjectId().toHexString();
+  return this.addDocument(docId, String(url), String(addedBy || 'system'));
+};
+
+// Update an existing todo's text and done state
+meetingSchema.methods.updateTodo = function(id, updates) {
+  const t = this.todos.find(x => x.id === id);
+  if (t) {
+    if (typeof updates.text === 'string') t.text = updates.text;
+    if (typeof updates.done === 'boolean') t.done = updates.done;
+    if (typeof updates.color === 'string') t.color = updates.color;
+    if (typeof updates.assignedToEmail === 'string') t.assignedToEmail = updates.assignedToEmail;
+  }
+  return this.save();
+};
+
+export default Meeting;

@@ -1,57 +1,19 @@
 // WebRTC Configuration for better remote connections
 export const WEBRTC_CONFIG = {
   iceServers: [
-    // Google STUN servers
+    // Keep the list short for faster discovery
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    
-    // Additional STUN servers for better connectivity
-    { urls: 'stun:stun.ekiga.net' },
-    { urls: 'stun:stun.ideasip.com' },
-    { urls: 'stun:stun.schlund.de' },
-    { urls: 'stun:stun.stunprotocol.org:3478' },
-    { urls: 'stun:stun.voiparound.com' },
-    { urls: 'stun:stun.voipbuster.com' },
-    { urls: 'stun:stun.voipstunt.com' },
-    { urls: 'stun:stun.counterpath.com' },
-    { urls: 'stun:stun.1und1.de' },
-    { urls: 'stun:stun.gmx.net' },
-    
-    // Free TURN servers (for NAT traversal)
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
+    // TURN (fallback). Replace with your own for production reliability
     {
       urls: 'turn:openrelay.metered.ca:443',
       username: 'openrelayproject',
       credential: 'openrelayproject'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    
-    // Additional free TURN servers
-    {
-      urls: 'turn:relay1.expressturn.com:3478',
-      username: 'efJBc8V4Z8Y7b3Qj',
-      credential: 'YVnNq3rQj8JBc9V4'
-    },
-    {
-      urls: 'turn:relay2.expressturn.com:3478',
-      username: 'efJBc8V4Z8Y7b3Qj',
-      credential: 'YVnNq3rQj8JBc9V4'
     }
   ],
-  
-  // ICE gathering policy for better connectivity
-  iceCandidatePoolSize: 10,
+
+  // Small pool keeps gathering quick
+  iceCandidatePoolSize: 2,
   
   // Bundle policy for better performance
   bundlePolicy: 'max-bundle',
@@ -136,15 +98,15 @@ export const getNetworkType = () => {
 
 // Retry configuration
 export const RETRY_CONFIG = {
-  maxRetries: 3,
-  retryDelay: 1000,
+  maxRetries: 4,
+  retryDelay: 1500,
   backoffMultiplier: 2
 };
 
 // Timeout configuration
 export const TIMEOUT_CONFIG = {
-  offerAnswerTimeout: 10000, // 10 seconds
-  iceGatheringTimeout: 15000, // 15 seconds
-  connectionTimeout: 30000, // 30 seconds
+  offerAnswerTimeout: 20000, // 20 seconds
+  iceGatheringTimeout: 25000, // 25 seconds
+  connectionTimeout: 45000, // 45 seconds
   reconnectionTimeout: 5000 // 5 seconds
 };

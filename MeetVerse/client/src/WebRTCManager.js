@@ -5,13 +5,12 @@ import {
   ICE_CONNECTION_STATES,
   SIGNALING_STATES,
   getConnectionQuality,
-  isRestrictiveNetwork,
   RETRY_CONFIG,
   TIMEOUT_CONFIG
 } from './webrtc-config';
 
 class WebRTCManager {
-  constructor(socket, meetingId) {
+  constructor(socket, meetingId, options = {}) {
     this.socket = socket;
     this.meetingId = meetingId;
     this.peerConnection = null;
@@ -23,6 +22,8 @@ class WebRTCManager {
     this.iceGatheringTimeout = null;
     this.reconnectTimeout = null;
     this.statsInterval = null;
+    this.isOfferer = !!options.isOfferer; // only one side should create offers
+    this.makingOffer = false; // polite peer glare handling
     
     // Pending signaling (arrived before PC ready)
     this.pendingOffer = null;
@@ -91,18 +92,29 @@ class WebRTCManager {
       if (this.pendingAnswer) {
         const answer = this.pendingAnswer; this.pendingAnswer = null;
         await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        await this.drainPendingIceCandidates();
       }
       // Add any buffered ICE candidates
       if (this.pendingIceCandidates.length) {
-        for (const c of this.pendingIceCandidates) {
-          try { await this.peerConnection.addIceCandidate(new RTCIceCandidate(c)); } catch (_) {}
-        }
-        this.pendingIceCandidates = [];
+        await this.drainPendingIceCandidates();
       }
     } catch (e) {
       console.error('Error flushing pending signaling:', e);
       this.handleError(e);
     }
+  }
+
+  async drainPendingIceCandidates() {
+    try {
+      if (!this.peerConnection || !this.peerConnection.remoteDescription) return;
+      if (!this.pendingIceCandidates.length) return;
+      const toApply = this.pendingIceCandidates.slice();
+      this.pendingIceCandidates = [];
+      for (const c of toApply) {
+        try { await this.peerConnection.addIceCandidate(new RTCIceCandidate(c)); }
+        catch (e) { console.debug('Ignoring ICE candidate apply error:', e?.message || e); }
+      }
+    } catch (_) {}
   }
 
   setupPeerConnectionListeners() {
@@ -169,9 +181,19 @@ class WebRTCManager {
     };
 
     // Handle negotiation needed
-    this.peerConnection.onnegotiationneeded = () => {
-      console.log('Negotiation needed, creating offer...');
-      this.createOffer();
+    this.peerConnection.onnegotiationneeded = async () => {
+      try {
+        if (!this.isOfferer) {
+          return; // only designated side creates offers
+        }
+        this.makingOffer = true;
+        console.log('Negotiation needed, creating offer...');
+        await this.createOffer();
+      } catch (e) {
+        console.error('onnegotiationneeded error:', e);
+      } finally {
+        this.makingOffer = false;
+      }
     };
   }
 
@@ -205,12 +227,25 @@ class WebRTCManager {
       console.log('Received offer:', offer);
       
       if (!this.peerConnection) {
-        console.warn('Peer connection not ready, buffering offer');
+        console.debug('Peer connection not ready, buffering offer');
         this.pendingOffer = offer;
         return;
       }
 
-      await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+      const offerDesc = new RTCSessionDescription(offer);
+      const isStable = this.peerConnection.signalingState === 'stable';
+      // Polite peer glare handling
+      if (!isStable || this.makingOffer) {
+        // If we're not offerer, roll back and accept remote
+        if (this.isOfferer) {
+          console.warn('Glare detected (offerer). Ignoring remote offer.');
+          return; // ignore as impolite peer
+        } else {
+          try { await this.peerConnection.setLocalDescription({ type: 'rollback' }); } catch (_) {}
+        }
+      }
+
+      await this.peerConnection.setRemoteDescription(offerDesc);
       const answer = await this.peerConnection.createAnswer();
       await this.peerConnection.setLocalDescription(answer);
       
@@ -219,6 +254,7 @@ class WebRTCManager {
         meetingId: this.meetingId, 
         answer: answer 
       });
+      await this.drainPendingIceCandidates();
       
     } catch (error) {
       console.error('Error handling offer:', error);
@@ -231,13 +267,18 @@ class WebRTCManager {
       console.log('Received answer:', answer);
       
       if (!this.peerConnection) {
-        console.warn('Peer connection not ready, buffering answer');
+        console.debug('Peer connection not ready, buffering answer');
         this.pendingAnswer = answer;
         return;
       }
 
+      if (this.peerConnection.signalingState !== 'have-local-offer') {
+        console.warn('Unexpected answer in state', this.peerConnection.signalingState);
+        return;
+      }
       await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
       this.clearOfferAnswerTimeout();
+      await this.drainPendingIceCandidates();
       
     } catch (error) {
       console.error('Error handling answer:', error);
@@ -250,7 +291,7 @@ class WebRTCManager {
       console.log('Received ICE candidate:', candidate);
       
       if (!this.peerConnection || !this.peerConnection.remoteDescription) {
-        console.warn('Peer not ready or no remoteDescription yet, buffering ICE');
+        console.debug('Peer not ready or no remoteDescription yet, buffering ICE');
         this.pendingIceCandidates.push(candidate);
         return;
       }

@@ -14,8 +14,18 @@ function Home() {
 
   // Initialize socket connection for meeting reminders
   useEffect(() => {
-    const serverBase = process.env.REACT_APP_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:5000`;
-    const newSocket = io(serverBase);
+    const serverBase = process.env.REACT_APP_SERVER_URL || 'http://127.0.0.1:5000';
+    // Force polling and explicitly set path for cross-browser stability
+    const newSocket = io(serverBase, {
+      transports: ['polling'],
+      path: '/socket.io',
+      withCredentials: true,
+      timeout: 10000,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000
+    });
     setSocket(newSocket);
 
     newSocket.on('meeting-reminder', (reminderData) => {
@@ -40,7 +50,7 @@ function Home() {
   // Notification permission is requested only in response to user actions elsewhere
 
   const createMeeting = async () => {
-    const serverBase = process.env.REACT_APP_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:5000`;
+    const serverBase = process.env.REACT_APP_SERVER_URL || 'http://127.0.0.1:5000';
     const res = await fetch(`${serverBase}/create-meet`, { method: 'POST' });
     const data = await res.json();
     try {
@@ -71,7 +81,14 @@ function Home() {
           <span>MeetVerse</span>
         </div>
         <div className="row">
-          <Link className="button secondary" to="/auth">Login / Signup</Link>
+          {(() => { try { return JSON.parse(localStorage.getItem('mv_user')||'null'); } catch { return null; } })() ? (
+            <>
+              <span className="subtle">Hello, {(() => { try { return (JSON.parse(localStorage.getItem('mv_user')||'null')||{}).username; } catch { return ''; } })() || 'User'}</span>
+              <button className="button secondary" onClick={() => { localStorage.removeItem('mv_user'); window.location.reload(); }}>Logout</button>
+            </>
+          ) : (
+            <Link className="button secondary" to="/auth">Login / Signup</Link>
+          )}
         </div>
       </header>
 
@@ -134,11 +151,12 @@ function Home() {
                   if (!value) return;
                   try {
                     const u = new URL(value);
-                    const match = u.pathname.match(/\/meet\/(.+)$/);
-                    if (match) {
-                      navigate(`/meet/${match[1]}`);
-                      return;
-                    }
+                    // Support both path-based and hash-based meeting URLs
+                    const pathMatch = u.pathname.match(/\/meet\/(.+)$/);
+                    if (pathMatch) { navigate(`/meet/${pathMatch[1]}`); return; }
+                    const hash = String(u.hash || '');
+                    const hashMatch = hash.match(/#\/?meet\/(.+)$/) || hash.match(/#\/?[^#]*#\/?meet\/(.+)$/);
+                    if (hashMatch) { navigate(`/meet/${hashMatch[1]}`); return; }
                   } catch (_) {
                     // not a full URL; maybe they pasted just an id
                   }
@@ -157,11 +175,11 @@ function Home() {
                 if (!value) return;
                 try {
                   const u = new URL(value);
-                  const match = u.pathname.match(/\/meet\/(.+)$/);
-                  if (match) {
-                    navigate(`/meet/${match[1]}`);
-                    return;
-                  }
+                  const pathMatch = u.pathname.match(/\/meet\/(.+)$/);
+                  if (pathMatch) { navigate(`/meet/${pathMatch[1]}`); return; }
+                  const hash = String(u.hash || '');
+                  const hashMatch = hash.match(/#\/?meet\/(.+)$/) || hash.match(/#\/?[^#]*#\/?meet\/(.+)$/);
+                  if (hashMatch) { navigate(`/meet/${hashMatch[1]}`); return; }
                 } catch (_) {}
                 const m2 = value.match(/^\/?meet\/(.+)$/) || value.match(/^([A-Za-z0-9_-]+)$/);
                 const id = m2 ? (m2[1] || m2[0]) : '';
