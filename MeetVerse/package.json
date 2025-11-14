@@ -9,7 +9,15 @@
     "install:all": "npm install && cd server && npm install && cd ../client && npm install",
     "test:integration": "node test-integration.js",
     "test:remote": "node test-remote-connection.js",
-    "setup": "cd server && npm run install-deps && cd ../client && npm install"
+    "setup": "cd server && npm run install-deps && cd ../client && npm install",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "docker:dev": "docker-compose up",
+    "shadow:start": "cd shadow-mode && start.bat",
+    "shadow:simple": "cd shadow-mode && start-simple.bat",
+    "shadow:check": "cd shadow-mode && check-status.bat"
   },
   "dependencies": {
     "axios": "^1.11.0",

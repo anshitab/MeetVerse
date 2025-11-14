@@ -160,7 +160,26 @@ MeetVerse/
 
 ## 🚀 Running the Application
 
-### Development Mode
+### Option 1: Docker Setup (Recommended)
+
+The easiest way to run MeetVerse with Shadow Mode is using Docker:
+
+```bash
+# Copy environment template
+cp .env.example .env
+
+# Edit .env with your API keys for Shadow Mode
+# Then start all services
+npm run docker:up
+
+# Access:
+# MeetVerse: http://localhost:3000
+# Shadow Mode API: http://localhost:8000
+```
+
+See [DOCKER_README.md](DOCKER_README.md) for detailed Docker instructions.
+
+### Option 2: Manual Development Setup
 
 1. **Start MongoDB** (if using local installation)
 2. **Start Backend**:
@@ -174,7 +193,7 @@ MeetVerse/
    npm start
    ```
 
-### Production Mode
+### Option 3: Production Mode
 
 1. **Build Frontend**:
    ```bash

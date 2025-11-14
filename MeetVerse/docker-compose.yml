@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7-jammy
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: meetverse
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MeetVerse Backend
+  backend:
+    build: ./server
+    ports:
+      - "5000:5000"
+    environment:
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/meetverse?authSource=admin
+      PORT: 5000
+      NODE_ENV: development
+      CLIENT_BASE_URL: http://localhost:3000
+      CLIENT_ORIGINS: http://localhost:3000,http://localhost:3001
+      ALLOW_ALL_ORIGINS: true
+      LIBRE_TRANSLATE_URL: https://libretranslate.de
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+
+  # MeetVerse Frontend
+  frontend:
+    build: ./client
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_SERVER_URL: http://localhost:5000
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+  # Shadow Mode Services
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shadowmode
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  shadow-backend:
+    build: ./shadow-mode/backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/shadowmode
+      REDIS_URL: redis://redis:6379/0
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-AIzaSyANHNak2lRceDbdHlK5s9HkHbhGXvX6Rh0}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-pro}
+      CHROMA_API_KEY: ${CHROMA_API_KEY:-ck-FyNuxRjv1B48oLi4a9dq5M5zaKU2fSmzCAxAvAmwfKsx}
+      CHROMA_TENANT: ${CHROMA_TENANT:-ca9ef9e7-c73f-48e4-ad67-e58f1f185635}
+      CHROMA_DATABASE: ${CHROMA_DATABASE:-MeetVerse}
+      CHROMA_PERSIST_DIR: /app/chroma_db
+      DOCUMENT_OUTPUT_DIR: /app/documents
+    volumes:
+      - ./shadow-mode/backend:/app
+      - chroma_data:/app/chroma_db
+      - document_data:/app/documents
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  shadow-worker:
+    build: ./shadow-mode/worker
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/shadowmode
+      REDIS_URL: redis://redis:6379/0
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-AIzaSyANHNak2lRceDbdHlK5s9HkHbhGXvX6Rh0}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-pro}
+      CHROMA_API_KEY: ${CHROMA_API_KEY:-ck-FyNuxRjv1B48oLi4a9dq5M5zaKU2fSmzCAxAvAmwfKsx}
+      CHROMA_TENANT: ${CHROMA_TENANT:-ca9ef9e7-c73f-48e4-ad67-e58f1f185635}
+      CHROMA_DATABASE: ${CHROMA_DATABASE:-MeetVerse}
+      CHROMA_PERSIST_DIR: /app/chroma_db
+      DOCUMENT_OUTPUT_DIR: /app/documents
+    volumes:
+      - ./shadow-mode/backend:/app
+      - chroma_data:/app/chroma_db
+      - document_data:/app/documents
+    depends_on:
+      - postgres
+      - redis
+      - shadow-backend
+
+  shadow-frontend:
+    build: ./shadow-mode/frontend
+    ports:
+      - "3001:3000"
+    environment:
+      VITE_API_URL: http://localhost:8000
+    volumes:
+      - ./shadow-mode/frontend:/app
+      - /app/node_modules
+    depends_on:
+      - shadow-backend
+
+volumes:
+  mongodb_data:
+  postgres_data:
+  chroma_data:
+  document_data:
