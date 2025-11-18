@@ -315,10 +315,21 @@ class WebRTCManager {
   }
 
   startIceGathering() {
-    // Set timeout for ICE gathering
+    // Set timeout for ICE gathering - only warn if still gathering after timeout
     this.iceGatheringTimeout = setTimeout(() => {
-      console.warn('ICE gathering timeout');
+      if (this.peerConnection && 
+          this.peerConnection.iceGatheringState !== 'complete' &&
+          this.peerConnection.iceGatheringState !== 'new') {
+        console.warn('ICE gathering taking longer than expected, but continuing...');
+        // Don't immediately fail - give it more time if connection is progressing
+        if (this.peerConnection.iceConnectionState === 'checking' || 
+            this.peerConnection.iceConnectionState === 'connected') {
+          console.log('Connection is progressing, extending timeout...');
+          return; // Don't fail if connection is making progress
+        }
+        // Only fail if no progress is being made
       this.handleConnectionFailure();
+      }
     }, TIMEOUT_CONFIG.iceGatheringTimeout);
   }
 
@@ -331,8 +342,16 @@ class WebRTCManager {
 
   setOfferAnswerTimeout() {
     this.offerAnswerTimeout = setTimeout(() => {
-      console.warn('Offer/Answer exchange timeout');
+      // Only fail if we're still waiting and no progress has been made
+      if (this.peerConnection && 
+          this.peerConnection.signalingState !== 'stable' &&
+          this.peerConnection.iceConnectionState !== 'connected' &&
+          this.peerConnection.iceConnectionState !== 'checking') {
+        console.warn('Offer/Answer exchange taking longer than expected');
       this.handleConnectionFailure();
+      } else {
+        console.log('Offer/Answer exchange in progress, continuing...');
+      }
     }, TIMEOUT_CONFIG.offerAnswerTimeout);
   }
 

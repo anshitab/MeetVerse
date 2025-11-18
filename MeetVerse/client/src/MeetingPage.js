@@ -3,6 +3,7 @@ import { io } from 'socket.io-client';
 import { useParams } from 'react-router-dom';
 import WebRTCManager from './WebRTCManager';
 import { CONNECTION_STATES } from './webrtc-config';
+import ShadowMode from './ShadowMode';
 
 function MeetingPage() {
   const { meetingId } = useParams();
@@ -44,6 +45,7 @@ function MeetingPage() {
   const [connectionState, setConnectionState] = useState(CONNECTION_STATES.NEW);
   const [connectionQuality, setConnectionQuality] = useState('unknown');
   const [connectionError, setConnectionError] = useState(null);
+  const [userId, setUserId] = useState('');
   const webrtcManager = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -141,6 +143,8 @@ function MeetingPage() {
         const storedUser = (()=>{ try { return JSON.parse(localStorage.getItem('mv_user')||'null'); } catch { return null; } })();
         const username = (storedUser && storedUser.username) || (storedUser && storedUser.name) || '';
         const email = (storedUser && storedUser.email) || '';
+        const userIdent = storedUser?.id || storedUser?._id || email || 'guest';
+        setUserId(userIdent);
         if (!email) { window.location.href = '/#/auth'; return; }
         usernameRef.current = username;
         selfIdRef.current = newSocket.id;
@@ -244,21 +248,49 @@ function MeetingPage() {
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       console.log("Dedicated useEffect for localVideoRef: Setting srcObject and playing.");
-      localVideoRef.current.srcObject = localStream;
-      localVideoRef.current.play().catch(e => console.error("Error playing local video (dedicated useEffect):", e));
+      const videoElement = localVideoRef.current;
+      const stream = localStream;
+      
+      // Check if stream is still active before setting
+      const activeTracks = stream.getTracks().filter(t => t.readyState === 'live');
+      if (activeTracks.length === 0) {
+        console.log("Stream has no active tracks, skipping video setup");
+        return;
+      }
+      
+      videoElement.srcObject = stream;
+      
+      // Play with better error handling
+      const playPromise = videoElement.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            console.log("Local video playing successfully");
+          })
+          .catch(e => {
+            // Only log if it's not an abort error (which is expected during cleanup)
+            if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
+              console.warn("Video play error (non-critical):", e.name);
+            }
+          });
+      }
+      
       // Sync UI toggles with actual track states
       try {
-        const a = localStream.getAudioTracks()[0];
+        const a = stream.getAudioTracks()[0];
         if (a) setIsMicOn(a.enabled);
       } catch (_) {}
       try {
-        const v = localStream.getVideoTracks()[0];
+        const v = stream.getVideoTracks()[0];
         if (v) setIsCamOn(v.enabled);
       } catch (_) {}
     } else if (localVideoRef.current && !localStream) {
       // If localStream becomes null (e.g., on cleanup/error), clear the video
       console.log("Dedicated useEffect for localVideoRef: Clearing srcObject as localStream is null.");
-      localVideoRef.current.srcObject = null;
+      const videoElement = localVideoRef.current;
+      // Pause before clearing to prevent abort errors
+      videoElement.pause().catch(() => {});
+      videoElement.srcObject = null;
     }
   }, [localStream]); // Dependency array: only re-run when localStream changes
 
@@ -269,14 +301,37 @@ function MeetingPage() {
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
       try {
-        remoteVideoRef.current.srcObject = remoteStream;
-        const p = remoteVideoRef.current.play();
-        if (p && typeof p.catch === 'function') p.catch(e => console.error('Error playing remote video (dedicated useEffect):', e));
+        const videoElement = remoteVideoRef.current;
+        const stream = remoteStream;
+        
+        // Check if stream has active tracks
+        const activeTracks = stream.getTracks().filter(t => t.readyState === 'live');
+        if (activeTracks.length === 0) {
+          console.log("Remote stream has no active tracks, skipping video setup");
+          return;
+        }
+        
+        videoElement.srcObject = stream;
+        const playPromise = videoElement.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              console.log("Remote video playing successfully");
+            })
+            .catch(e => {
+              // Only log if it's not an abort error (expected during cleanup)
+              if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
+                console.warn("Remote video play error (non-critical):", e.name);
+              }
+            });
+        }
       } catch (e) {
-        console.error('Error attaching remote stream:', e);
+        console.warn('Error attaching remote stream (non-critical):', e.name || e);
       }
     } else if (remoteVideoRef.current && !remoteStream) {
-      remoteVideoRef.current.srcObject = null;
+      const videoElement = remoteVideoRef.current;
+      videoElement.pause().catch(() => {});
+      videoElement.srcObject = null;
     }
   }, [remoteStream]);
 
@@ -540,7 +595,14 @@ function MeetingPage() {
           <div className="meet-tile" style={{ width: '100%' }}>
             {localStream ? (
               <video ref={localVideoRef} autoPlay playsInline muted onLoadedMetadata={() => {
-                try { if (localVideoRef.current) localVideoRef.current.play(); } catch(e) { console.error('Local video play error:', e); }
+                if (localVideoRef.current) {
+                  localVideoRef.current.play().catch(e => {
+                    // Only log non-abort errors
+                    if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
+                      console.warn('Local video play error (non-critical):', e.name);
+                    }
+                  });
+                }
               }} />
             ) : (
               <div className="center" style={{ height: '100%' }}><span className="subtle">You</span></div>
@@ -559,7 +621,14 @@ function MeetingPage() {
                 ) : (
                   p.hasStream && remoteStream ? (
                     <video ref={remoteVideoRef} autoPlay playsInline onLoadedMetadata={() => {
-                      try { if (remoteVideoRef.current) remoteVideoRef.current.play(); } catch(e) { console.error('Remote video play error:', e); }
+                      if (remoteVideoRef.current) {
+                        remoteVideoRef.current.play().catch(e => {
+                          // Only log non-abort errors
+                          if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
+                            console.warn('Remote video play error (non-critical):', e.name);
+                          }
+                        });
+                      }
                     }} />
                   ) : (
                     <div className="center" style={{ height: '100%' }}><span className="subtle">{p.name || 'Remote'}</span></div>
@@ -720,8 +789,14 @@ function MeetingPage() {
               }
               // Show screen locally
               if (localVideoRef.current) {
-                localVideoRef.current.srcObject = screenStream;
-                localVideoRef.current.play().catch(()=>{});
+                const videoElement = localVideoRef.current;
+                videoElement.srcObject = screenStream;
+                videoElement.play().catch(e => {
+                  // Only log if it's not an abort error
+                  if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
+                    console.warn('Screen share play error (non-critical):', e.name);
+                  }
+                });
               }
               // When screen share stops, revert automatically
               screenTrack.onended = async () => { await revertToCamera(); };
@@ -958,6 +1033,9 @@ function MeetingPage() {
           </div>
         </div>
       )}
+
+      {/* Shadow Mode AI Intern */}
+      <ShadowMode meetingId={meetingId} userId={userId} />
     </div>
   );
 }

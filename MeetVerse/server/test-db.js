@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-require('dotenv').config();
-const mongoose = require('mongoose');
-const Meeting = require('./models/Meeting');
+import dotenv from 'dotenv';
+dotenv.config();
+import mongoose from 'mongoose';
+import Meeting from './models/Meeting.js';
 
 async function testDatabase() {
   try {

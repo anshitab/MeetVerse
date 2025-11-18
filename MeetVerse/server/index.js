@@ -39,15 +39,10 @@ const allowedOrigins = (process.env.CLIENT_ORIGINS || 'http://localhost:3000')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
-const allowAllCors = (process.env.ALLOW_ALL_ORIGINS === 'true') || (process.env.NODE_ENV !== 'production');
+const allowAllCors = true;
 
 app.use(cors({
-  origin: allowAllCors ? true : (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    if (/^http:\/\/localhost:\d+/.test(origin)) return callback(null, true);
-    return callback(null, false);
-  },
+  origin: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -162,12 +157,7 @@ if (process.env.HTTPS === 'true') {
 
 const io = new Server(server, {
   cors: {
-    origin: allowAllCors ? true : (origin, callback) => {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      if (/^http:\/\/localhost:\d+/.test(origin)) return callback(null, true);
-      return callback(null, false);
-    },
+    origin: true,
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -177,6 +167,11 @@ const io = new Server(server, {
 
 app.get('/', (req, res) => {
   res.send('Socket.io server is running.');
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // --- API ROUTES ---
@@ -608,6 +603,34 @@ app.get('/meeting-stats/:id', async (req, res) => {
   } catch (error) {
     console.error('Error fetching meeting stats:', error);
     res.status(500).json({ error: 'Failed to fetch meeting statistics' });
+  }
+});
+
+// Get meeting history for a user (by email)
+app.get('/api/meetings/history', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ error: 'Email parameter is required' });
+    }
+
+    const emailLc = String(email).toLowerCase();
+    
+    // Find meetings where user is host or participant
+    const meetings = await Meeting.find({
+      $or: [
+        { hostEmail: emailLc },
+        { 'participants.email': emailLc }
+      ],
+      status: { $in: ['completed', 'cancelled'] }
+    })
+    .sort({ endTime: -1, createdAt: -1 })
+    .limit(100); // Limit to last 100 meetings
+    
+    res.json(meetings);
+  } catch (error) {
+    console.error('Error fetching meeting history:', error);
+    res.status(500).json({ error: 'Failed to fetch meeting history' });
   }
 });
 

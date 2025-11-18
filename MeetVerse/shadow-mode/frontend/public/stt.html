@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MeetVerse STT — Shadow Mode</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      background: #fafafa;
+    }
+
+    #transcript {
+      white-space: pre-wrap;
+      background: #fff;
+      padding: 16px;
+      border-radius: 8px;
+      min-height: 150px;
+      box-shadow: 0 0 6px rgba(0,0,0,0.08);
+      margin-top: 20px;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    .controls {
+      margin-top: 15px;
+    }
+
+    button {
+      padding: 10px 18px;
+      font-size: 16px;
+      margin-right: 10px;
+      cursor: pointer;
+    }
+
+    input {
+      padding: 8px;
+      margin-right: 10px;
+      font-size: 16px;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>MeetVerse — Live Speech-to-Text (Shadow Mode)</h2>
+  <p>Enter a room ID + username, then click Start.</p>
+
+  <div>
+    <input id="roomInput" type="text" placeholder="Room ID" value="testroom" />
+    <input id="userInput" type="text" placeholder="Username" value="gotam" />
+  </div>
+
+  <div class="controls">
+    <button id="startBtn">Start STT</button>
+    <button id="stopBtn" disabled>Stop STT</button>
+  </div>
+
+  <div id="transcript">Transcript will appear here...</div>
+
+  <script>
+    let ws;
+    let audioContext, source, processor;
+
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const transcriptDiv = document.getElementById("transcript");
+
+    // Convert Float32 → PCM16
+    function floatTo16BitPCM(float32Array) {
+      const buffer = new ArrayBuffer(float32Array.length * 2);
+      const view = new DataView(buffer);
+      let offset = 0;
+
+      for (let i = 0; i < float32Array.length; i++, offset += 2) {
+        let s = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      }
+      return buffer;
+    }
+
+    // ArrayBuffer → Base64
+    function arrayBufferToBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    }
+
+    async function startMicrophone(ws) {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      audioContext = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: 16000
+      });
+
+      source = audioContext.createMediaStreamSource(stream);
+
+      processor = audioContext.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (event) => {
+        const float32 = event.inputBuffer.getChannelData(0);
+        const pcm16 = floatTo16BitPCM(float32);
+        const base64Chunk = arrayBufferToBase64(pcm16);
+
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "audio",
+              audio: base64Chunk
+            })
+          );
+        }
+      };
+
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+    }
+
+
+    startBtn.onclick = async () => {
+      const roomId = document.getElementById("roomInput").value.trim();
+      const username = document.getElementById("userInput").value.trim();
+
+      if (!roomId || !username) {
+        alert("Enter room ID and username.");
+        return;
+      }
+
+      ws = new WebSocket(`ws://${location.hostname}:8000/ws/${roomId}/${username}`);
+
+      ws.onopen = () => {
+        console.log("Connected to WS server");
+        startMicrophone(ws);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "transcript") {
+            transcriptDiv.textContent = msg.text || "";
+          }
+        } catch (err) {
+          console.warn("Non-JSON message:", event.data);
+        }
+      };
+
+      ws.onclose = () => console.log("WS closed");
+
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+    };
+
+
+    stopBtn.onclick = () => {
+      stopBtn.disabled = true;
+      startBtn.disabled = false;
+
+      if (processor) {
+        processor.disconnect();
+        processor.onaudioprocess = null;
+      }
+
+      if (source) source.disconnect();
+      if (audioContext) audioContext.close();
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "close" }));
+        ws.close();
+      }
+
+      transcriptDiv.textContent += "\n-- stopped --";
+    };
+  </script>
+</body>
+</html>

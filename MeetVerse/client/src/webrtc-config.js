@@ -105,8 +105,8 @@ export const RETRY_CONFIG = {
 
 // Timeout configuration
 export const TIMEOUT_CONFIG = {
-  offerAnswerTimeout: 20000, // 20 seconds
-  iceGatheringTimeout: 25000, // 25 seconds
-  connectionTimeout: 45000, // 45 seconds
+  offerAnswerTimeout: 30000, // 30 seconds (increased from 20)
+  iceGatheringTimeout: 35000, // 35 seconds (increased from 25)
+  connectionTimeout: 60000, // 60 seconds (increased from 45)
   reconnectionTimeout: 5000 // 5 seconds
 };

@@ -98,11 +98,30 @@ function Home() {
           <p className="subtle" style={{ maxWidth: 720 }}>
             Crystal‑clear video, real‑time chat with instant language hints, and effortless meeting links.
           </p>
+          <div style={{
+            marginTop: 16,
+            padding: '12px 16px',
+            background: 'linear-gradient(135deg, rgba(108, 140, 255, 0.15), rgba(108, 140, 255, 0.05))',
+            border: '1px solid rgba(108, 140, 255, 0.3)',
+            borderRadius: 12,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12
+          }}>
+            <span style={{ fontSize: 24 }}>🤖</span>
+            <div>
+              <strong style={{ fontSize: 14, color: 'var(--primary)' }}>Shadow AI Intern</strong>
+              <p className="subtle" style={{ margin: '4px 0 0 0', fontSize: 12 }}>
+                AI-powered meeting assistant with document generation, summaries, and more
+              </p>
+            </div>
+          </div>
 
           <div className="row" style={{ marginTop: 16 }}>
             <button className="button" onClick={createMeeting}>Create a meeting</button>
             <button className="button secondary" onClick={() => setShowScheduleModal(true)}>Schedule a meeting</button>
             <a className="button secondary" href="#join">Join with a link</a>
+            <Link className="button secondary" to="/history">Meeting History</Link>
           </div>
         </section>
 
