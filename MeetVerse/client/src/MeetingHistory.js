@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+
 
 function MeetingHistory() {
   const [meetings, setMeetings] = useState([]);
@@ -7,6 +8,7 @@ function MeetingHistory() {
   const [error, setError] = useState('');
   const [userEmail, setUserEmail] = useState('');
   const [expandedMeeting, setExpandedMeeting] = useState(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     try {
@@ -328,7 +330,7 @@ function MeetingHistory() {
                                 <div className="stack" style={{ gap: 8, marginTop: 8, maxHeight: '200px', overflowY: 'auto', padding: 12, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 8 }}>
                                   {meeting.chatMessages.map((msg, idx) => (
                                     <div key={idx} style={{ fontSize: '0.9em' }}>
-                                      <strong>{msg.id?.substring(0, 8) || 'User'}</strong> ({msg.timestamp || 'N/A'}): {msg.text}
+                                      <strong>{msg.username || msg.name || (msg.id?.substring(0, 8) || 'User')}</strong> ({msg.timestamp || 'N/A'}): {msg.text}
                                       {msg.translatedTextEn && (
                                         <div className="subtle" style={{ fontSize: '0.85em', marginTop: 2 }}>
                                           [EN]: {msg.translatedTextEn}
@@ -365,6 +367,15 @@ function MeetingHistory() {
                             )}
 
                             <div className="row" style={{ gap: 8 }}>
+                              <button 
+                                className="button"
+                                style={{ fontSize: '0.9em' }}
+                                onClick={() => {
+                                  navigate(`/meet/${meeting.meetingId}`);
+                                }}
+                              >
+                                Join Meeting
+                              </button>
                               <a 
                                 href={meeting.meetingLink} 
                                 className="button secondary"

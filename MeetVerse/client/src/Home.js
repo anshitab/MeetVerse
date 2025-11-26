@@ -1,214 +1,324 @@
-import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { io } from 'socket.io-client';
-import ScheduleMeeting from './ScheduleMeeting';
-import ScheduledMeetings from './ScheduledMeetings';
+import React, { useState, useEffect, useRef } from "react";
+import { Link, useNavigate } from "react-router-dom";
+
+import ScheduleMeeting from "./ScheduleMeeting";
+import ScheduledMeetings from "./ScheduledMeetings";
 
 function Home() {
-  const [meetingLink, setMeetingLink] = useState('');
+  const [meetingLink, setMeetingLink] = useState("");
   const [showScheduleModal, setShowScheduleModal] = useState(false);
-  const [hostEmail, setHostEmail] = useState('');
-  const [socket, setSocket] = useState(null);
-  const [scheduledMeetings, setScheduledMeetings] = useState([]);
+  const [hostEmail, setHostEmail] = useState("");
+
+  // Reminder WebSocket stored in a ref, not state (prevents ESLint warnings)
+  const reminderWS = useRef(null);
+
   const navigate = useNavigate();
 
-  // Initialize socket connection for meeting reminders
+  // ==========================================================
+  // REMINDER WEBSOCKET — triggers when user enters email
+  // ==========================================================
   useEffect(() => {
-    const serverBase = process.env.REACT_APP_SERVER_URL || 'http://127.0.0.1:5000';
-    // Force polling and explicitly set path for cross-browser stability
-    const newSocket = io(serverBase, {
-      transports: ['polling'],
-      path: '/socket.io',
-      withCredentials: true,
-      timeout: 10000,
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000
-    });
-    setSocket(newSocket);
+    if (!hostEmail) return;
 
-    newSocket.on('meeting-reminder', (reminderData) => {
-      try {
-        if (Notification.permission === 'granted') {
-          new Notification('Meeting Reminder', {
-            body: `${reminderData.title} is starting in 5 minutes!`,
-            icon: '/favicon.ico',
-            tag: reminderData.meetingId
-          });
-        }
-      } catch (_) {}
-      // Always show an in-page fallback
-      alert(`Meeting Reminder: ${reminderData.title} is starting in 5 minutes!`);
-    });
+    const emailEncoded = encodeURIComponent(hostEmail);
+    const roomId = `reminder-${emailEncoded}`;
+    const username = emailEncoded;
 
-    return () => {
-      newSocket.disconnect();
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const wsURL = `${protocol}://127.0.0.1:5000/ws/${roomId}/${username}`;
+
+    const ws = new WebSocket(wsURL);
+    reminderWS.current = ws;
+
+    ws.onopen = () => {
+      console.log("🔔 Reminder WebSocket connected:", wsURL);
     };
-  }, []);
 
-  // Notification permission is requested only in response to user actions elsewhere
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
 
+        if (msg.type === "meeting-reminder") {
+          if (Notification.permission === "granted") {
+            new Notification("Meeting Reminder", {
+              body: `${msg.title} is starting soon!`,
+              tag: msg.meetingId || "meeting",
+            });
+          }
+
+          // Fallback visual alert
+          alert(`Meeting Reminder: ${msg.title}`);
+        }
+      } catch (err) {
+        console.warn("WS non-JSON message:", event.data);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log("🔌 Reminder WebSocket closed");
+      reminderWS.current = null;
+    };
+
+    ws.onerror = (err) => {
+      console.error("⚠️ WS Error:", err);
+    };
+
+    // Cleanup
+    return () => {
+      try {
+        if (reminderWS.current) reminderWS.current.close();
+      } catch (_) {}
+      reminderWS.current = null;
+    };
+  }, [hostEmail]);
+
+  // ==========================================================
+  // CREATE MEETING
+  // ==========================================================
   const createMeeting = async () => {
-    const serverBase = process.env.REACT_APP_SERVER_URL || 'http://127.0.0.1:5000';
-    const res = await fetch(`${serverBase}/create-meet`, { method: 'POST' });
+    const serverBase =
+      process.env.REACT_APP_SERVER_URL ||
+      `${window.location.protocol}//127.0.0.1:5000`;
+
+    const res = await fetch(`${serverBase}/create-meet`, {
+      method: "POST",
+    });
+
     const data = await res.json();
+    if (!data?.link) {
+      alert("Server error creating meeting");
+      return;
+    }
+
     try {
-      const createdUrl = new URL(data.link);
-      const hashPath = `#${createdUrl.pathname}`;
-      const clientOrigin = window.location.origin;
-      const clientBasePath = window.location.pathname.replace(/\/?$/, '/');
-      const hashedUrl = `${clientOrigin}${clientBasePath}${hashPath}`;
-      setMeetingLink(hashedUrl);
-    } catch (_) {
-      // Fallback: assume path "/meet/:id"
-      const pathOnly = (data.link || '').split(window.location.origin)[1] || '/';
-      const hashedUrl = `${window.location.origin}${window.location.pathname.replace(/\/?$/, '/') }#${pathOnly}`;
-      setMeetingLink(hashedUrl);
+      const createdURL = new URL(data.link);
+      const hashPath = `#${createdURL.pathname}`;
+      const full = `${window.location.origin}${window.location.pathname.replace(
+        /\/?$/,
+        "/"
+      )}${hashPath}`;
+
+      setMeetingLink(full);
+    } catch {
+      setMeetingLink(data.link);
     }
   };
 
-  const handleMeetingScheduled = (meeting) => {
-    setScheduledMeetings(prev => [...prev, meeting]);
-    alert('Meeting scheduled successfully! You will receive a reminder 5 minutes before the meeting starts.');
+  // ==========================================================
+  // HANDLE MEETING SCHEDULED EVENT
+  // ==========================================================
+  const handleMeetingScheduled = () => {
+    alert(
+      "Meeting scheduled successfully! You will receive a reminder before the meeting."
+    );
   };
 
+  // ==========================================================
+  // UI RENDER
+  // ==========================================================
   return (
     <div className="container">
+      {/* Header */}
       <header className="header card">
         <div className="brand">
           <div className="brand-mark" />
           <span>MeetVerse</span>
         </div>
+
         <div className="row">
-          {(() => { try { return JSON.parse(localStorage.getItem('mv_user')||'null'); } catch { return null; } })() ? (
+          {(() => {
+            try {
+              return JSON.parse(localStorage.getItem("mv_user") || "null");
+            } catch {
+              return null;
+            }
+          })() ? (
             <>
-              <span className="subtle">Hello, {(() => { try { return (JSON.parse(localStorage.getItem('mv_user')||'null')||{}).username; } catch { return ''; } })() || 'User'}</span>
-              <button className="button secondary" onClick={() => { localStorage.removeItem('mv_user'); window.location.reload(); }}>Logout</button>
+              <span className="subtle">
+                Hello,{" "}
+                {(() => {
+                  try {
+                    return (
+                      JSON.parse(localStorage.getItem("mv_user") || "null")
+                        ?.username || "User"
+                    );
+                  } catch {
+                    return "User";
+                  }
+                })()}
+              </span>
+
+              <button
+                className="button secondary"
+                onClick={() => {
+                  localStorage.removeItem("mv_user");
+                  window.location.reload();
+                }}
+              >
+                Logout
+              </button>
             </>
           ) : (
-            <Link className="button secondary" to="/auth">Login / Signup</Link>
+            <Link className="button secondary" to="/auth">
+              Login / Signup
+            </Link>
           )}
         </div>
       </header>
 
+      {/* Main Body */}
       <main className="stack" style={{ marginTop: 32 }}>
+        {/* HERO BANNER */}
         <section className="card" style={{ padding: 28 }}>
           <h1 className="heading-hero">Connect. Collaborate. Create.</h1>
+
           <p className="subtle" style={{ maxWidth: 720 }}>
-            Crystal‑clear video, real‑time chat with instant language hints, and effortless meeting links.
+            Crystal-clear video, real-time chat with instant language hints, and
+            effortless meeting links.
           </p>
-          <div style={{
-            marginTop: 16,
-            padding: '12px 16px',
-            background: 'linear-gradient(135deg, rgba(108, 140, 255, 0.15), rgba(108, 140, 255, 0.05))',
-            border: '1px solid rgba(108, 140, 255, 0.3)',
-            borderRadius: 12,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12
-          }}>
-            <span style={{ fontSize: 24 }}>🤖</span>
+
+          <div
+            style={{
+              marginTop: 16,
+              padding: "12px 16px",
+              background:
+                "linear-gradient(135deg, rgba(108, 140, 255, 0.15), rgba(108, 140, 255, 0.05))",
+              border: "1px solid rgba(108, 140, 255, 0.3)",
+              borderRadius: 12,
+              display: "flex",
+              gap: 12,
+            }}
+          >
+            <span style={{ fontSize: 26 }}>🤖</span>
             <div>
-              <strong style={{ fontSize: 14, color: 'var(--primary)' }}>Shadow AI Intern</strong>
-              <p className="subtle" style={{ margin: '4px 0 0 0', fontSize: 12 }}>
-                AI-powered meeting assistant with document generation, summaries, and more
+              <strong style={{ color: "var(--primary)" }}>
+                Shadow Mode AI Intern
+              </strong>
+              <p className="subtle" style={{ marginTop: 4, fontSize: 12 }}>
+                AI meeting assistant to summarize, transcribe, and organize
+                everything.
               </p>
             </div>
           </div>
 
+          {/* Buttons */}
           <div className="row" style={{ marginTop: 16 }}>
-            <button className="button" onClick={createMeeting}>Create a meeting</button>
-            <button className="button secondary" onClick={() => setShowScheduleModal(true)}>Schedule a meeting</button>
-            <a className="button secondary" href="#join">Join with a link</a>
-            <Link className="button secondary" to="/history">Meeting History</Link>
+            <button className="button" onClick={createMeeting}>
+              Create a meeting
+            </button>
+
+            <button
+              className="button secondary"
+              onClick={() => setShowScheduleModal(true)}
+            >
+              Schedule a meeting
+            </button>
+
+            <a className="button secondary" href="#join">
+              Join with a link
+            </a>
+
+            <Link className="button secondary" to="/history">
+              Meeting History
+            </Link>
           </div>
         </section>
 
+        {/* SHOW MEETING LINK */}
         {meetingLink && (
           <section className="card" style={{ padding: 20 }}>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
               <div className="stack" style={{ flex: 1 }}>
                 <span className="subtle">Share this link</span>
-                <a className="mono" href={meetingLink}>{meetingLink}</a>
+                <a className="mono" href={meetingLink}>
+                  {meetingLink}
+                </a>
               </div>
+
               <div className="row">
-                <a className="button" href={meetingLink}>Go to meeting</a>
+                <a className="button" href={meetingLink}>
+                  Go to meeting
+                </a>
               </div>
             </div>
           </section>
         )}
 
+        {/* SCHEDULED MEETINGS */}
         <section className="card" style={{ padding: 20 }}>
           <h3 style={{ marginTop: 0 }}>View Scheduled Meetings</h3>
+
           <div className="chat-input" style={{ marginBottom: 16 }}>
             <input
               className="input"
               type="email"
-              placeholder="Enter your email to view scheduled meetings"
+              placeholder="Enter your email"
               value={hostEmail}
               onChange={(e) => setHostEmail(e.target.value)}
             />
             <button
               className="button secondary"
               onClick={() => setHostEmail(hostEmail)}
-            >Load Meetings</button>
+            >
+              Load Meetings
+            </button>
           </div>
+
           {hostEmail && <ScheduledMeetings hostEmail={hostEmail} />}
         </section>
 
+        {/* JOIN A MEETING */}
         <section id="join" className="card" style={{ padding: 20 }}>
           <h3 style={{ marginTop: 0 }}>Join a Meeting</h3>
+
           <div className="chat-input">
             <input
               className="input"
               type="url"
-              placeholder="Paste meeting link (e.g. http://localhost:3000/meet/abcd)"
+              placeholder="Paste meeting link"
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  const value = String(e.target.value || '').trim();
-                  if (!value) return;
+                if (e.key === "Enter") {
+                  const val = e.target.value.trim();
+                  if (!val) return;
+
                   try {
-                    const u = new URL(value);
-                    // Support both path-based and hash-based meeting URLs
-                    const pathMatch = u.pathname.match(/\/meet\/(.+)$/);
-                    if (pathMatch) { navigate(`/meet/${pathMatch[1]}`); return; }
-                    const hash = String(u.hash || '');
-                    const hashMatch = hash.match(/#\/?meet\/(.+)$/) || hash.match(/#\/?[^#]*#\/?meet\/(.+)$/);
-                    if (hashMatch) { navigate(`/meet/${hashMatch[1]}`); return; }
-                  } catch (_) {
-                    // not a full URL; maybe they pasted just an id
-                  }
-                  // If they pasted an id or relative path
-                  const m2 = value.match(/^\/?meet\/(.+)$/) || value.match(/^([A-Za-z0-9_-]+)$/);
-                  const id = m2 ? (m2[1] || m2[0]) : '';
-                  if (id) navigate(`/meet/${id}`);
+                    const u = new URL(val);
+                    const match = u.pathname.match(/\/meet\/(.+)$/);
+                    if (match) navigate(`/meet/${match[1]}`);
+                    return;
+                  } catch (_) {}
+
+                  const simple = val.match(/^\/?meet\/(.+)$/);
+                  if (simple) navigate(`/meet/${simple[1]}`);
                 }
               }}
             />
+
             <button
               className="button secondary"
               onClick={() => {
-                const input = document.querySelector('#join input');
-                const value = String(input?.value || '').trim();
-                if (!value) return;
+                const input = document.querySelector("#join input");
+                const val = input?.value.trim();
+                if (!val) return;
+
                 try {
-                  const u = new URL(value);
-                  const pathMatch = u.pathname.match(/\/meet\/(.+)$/);
-                  if (pathMatch) { navigate(`/meet/${pathMatch[1]}`); return; }
-                  const hash = String(u.hash || '');
-                  const hashMatch = hash.match(/#\/?meet\/(.+)$/) || hash.match(/#\/?[^#]*#\/?meet\/(.+)$/);
-                  if (hashMatch) { navigate(`/meet/${hashMatch[1]}`); return; }
+                  const u = new URL(val);
+                  const match = u.pathname.match(/\/meet\/(.+)$/);
+                  if (match) navigate(`/meet/${match[1]}`);
+                  return;
                 } catch (_) {}
-                const m2 = value.match(/^\/?meet\/(.+)$/) || value.match(/^([A-Za-z0-9_-]+)$/);
-                const id = m2 ? (m2[1] || m2[0]) : '';
-                if (id) navigate(`/meet/${id}`);
+
+                const simple = val.match(/^\/?meet\/(.+)$/);
+                if (simple) navigate(`/meet/${simple[1]}`);
               }}
-            >Join</button>
+            >
+              Join
+            </button>
           </div>
         </section>
       </main>
 
+      {/* MODAL */}
       {showScheduleModal && (
         <ScheduleMeeting
           onClose={() => setShowScheduleModal(false)}

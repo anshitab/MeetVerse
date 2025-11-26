@@ -1,19 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState } from "react";
 
 function ScheduleMeeting({ onClose, onMeetingScheduled }) {
   const [formData, setFormData] = useState({
-    title: '',
-    description: '',
-    scheduledTime: '',
-    hostEmail: '',
-    hostName: ''
+    title: "",
+    description: "",
+    scheduledTime: "",
+    hostEmail: "",
+    hostName: ""
   });
+
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
+
+    setFormData((prev) => ({
       ...prev,
       [name]: value
     }));
@@ -22,14 +24,17 @@ function ScheduleMeeting({ onClose, onMeetingScheduled }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsLoading(true);
-    setError('');
+    setError("");
 
     try {
-      const serverBase = process.env.REACT_APP_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:5000`;
+      const serverBase =
+        process.env.REACT_APP_SERVER_URL ||
+        `${window.location.protocol}//${window.location.hostname}:5000`;
+
       const response = await fetch(`${serverBase}/schedule-meet`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json"
         },
         body: JSON.stringify(formData)
       });
@@ -37,45 +42,44 @@ function ScheduleMeeting({ onClose, onMeetingScheduled }) {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to schedule meeting');
+        throw new Error(data.error || "Failed to schedule meeting");
       }
 
-      // Notify parent component
-      if (onMeetingScheduled) {
-        onMeetingScheduled(data);
-      }
+      // Notify parent (Home.js)
+      onMeetingScheduled?.(data);
 
-      // Reset form
+      // Reset
       setFormData({
-        title: '',
-        description: '',
-        scheduledTime: '',
-        hostEmail: '',
-        hostName: ''
+        title: "",
+        description: "",
+        scheduledTime: "",
+        hostEmail: "",
+        hostName: ""
       });
 
       // Close modal
-      if (onClose) {
-        onClose();
-      }
-
+      onClose?.();
     } catch (err) {
-      setError(err.message);
+      setError(err.message || "Something went wrong");
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Set minimum datetime to current time
+  // Prevent selecting past time
   const now = new Date();
-  const minDateTime = new Date(now.getTime() + 60 * 1000).toISOString().slice(0, 16);
+  const minDateTime = new Date(now.getTime() + 60 * 1000)
+    .toISOString()
+    .slice(0, 16);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>Schedule a Meeting</h2>
-          <button className="close-button" onClick={onClose}>×</button>
+          <button className="close-button" onClick={onClose}>
+            ×
+          </button>
         </div>
 
         <form onSubmit={handleSubmit} className="schedule-form">
@@ -142,18 +146,14 @@ function ScheduleMeeting({ onClose, onMeetingScheduled }) {
             />
           </div>
 
-          {error && (
-            <div className="error-message">
-              {error}
-            </div>
-          )}
+          {error && <div className="error-message">{error}</div>}
 
           <div className="form-actions">
             <button type="button" className="button secondary" onClick={onClose}>
               Cancel
             </button>
             <button type="submit" className="button" disabled={isLoading}>
-              {isLoading ? 'Scheduling...' : 'Schedule Meeting'}
+              {isLoading ? "Scheduling..." : "Schedule Meeting"}
             </button>
           </div>
         </form>

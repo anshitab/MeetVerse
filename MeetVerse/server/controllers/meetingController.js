@@ -51,3 +51,44 @@ export const getMeetings = asyncHandler(async (req, res) => {
       .json({ success: false, message: 'Failed to fetch meetings' });
   }
 });
+
+// @desc    Get meeting history for a host email
+// @route   GET /api/meetings/history?email=<email>&status=<status>&limit=<limit>
+// @access  Public (uses email lookup)
+export const getMeetingHistory = asyncHandler(async (req, res) => {
+  try {
+    const email = String(req.query.email || '').trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const status = String(req.query.status || '').trim().toLowerCase();
+    const limitParam = parseInt(req.query.limit, 10);
+    const limit =
+      Number.isFinite(limitParam) && limitParam > 0
+        ? Math.min(limitParam, 200)
+        : 100;
+
+    const query = {
+      $or: [
+        { hostEmail: email },
+        { participants: { $elemMatch: { email } } },
+      ],
+    };
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+
+    const meetings = await Meeting.find(query)
+      .sort({ scheduledTime: -1, createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    res.json(meetings);
+  } catch (err) {
+    console.error('Error fetching meeting history:', err);
+    res
+      .status(500)
+      .json({ error: 'Failed to load meeting history. Please try again.' });
+  }
+});

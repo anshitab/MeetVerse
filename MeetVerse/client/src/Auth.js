@@ -7,7 +7,7 @@ function Auth() {
   const [transitionKey, setTransitionKey] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const exitingRef = useRef(null);
+  // const exitingRef = useRef(null);
 
   const submit = async (e) => {
     e.preventDefault();

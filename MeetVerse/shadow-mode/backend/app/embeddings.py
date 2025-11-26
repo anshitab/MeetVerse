@@ -1,38 +1,32 @@
-import os
+# app/embeddings.py
+
 import google.generativeai as genai
+import os
 
-# Configure Gemini with API Key
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# ✔ VALID Gemini embedding model
-GEMINI_EMBED_MODEL = "models/text-embedding-004"
+if not GEMINI_API_KEY:
+    raise ValueError("❌ GEMINI_API_KEY missing in environment variables")
 
+genai.configure(api_key=GEMINI_API_KEY)
 
-def embed_text(text: str):
+# Use Gemini embedding model
+EMBED_MODEL = "models/text-embedding-004"
+
+def embed_text(text: str) -> list:
     """
-    Generate an embedding using Gemini.
-    Always returns a valid non-empty list to prevent Chroma crashes.
+    Returns a vector embedding for any text using Gemini.
     """
-
-    # Empty / None safety
-    if not text or text.strip() == "":
-        return [0.0] * 768  # fallback vector (Chroma requires non-empty embedding)
+    if not text:
+        return [0.0] * 768  # fallback vector
 
     try:
         response = genai.embed_content(
-            model=GEMINI_EMBED_MODEL,
+            model=EMBED_MODEL,
             content=text,
+            task_type="retrieval_document"
         )
-        embedding = response.get("embedding")
-
-        # Safety check: ensure embedding is valid
-        if not embedding or len(embedding) == 0:
-            print("⚠️ Gemini returned empty embedding. Using fallback.")
-            return [0.0] * 768
-
-        return embedding
-
+        return response["embedding"]
     except Exception as e:
-        print("❌ Gemini embedding error:", e)
-        # Final fallback to avoid CRASH
+        print("Embedding error:", e)
         return [0.0] * 768

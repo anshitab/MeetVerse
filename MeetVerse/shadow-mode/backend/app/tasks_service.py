@@ -5,13 +5,30 @@ Pure Chroma backend. No MongoDB, no Celery.
 
 import uuid
 from datetime import datetime
+from pydantic import BaseModel
+from typing import Optional
 
-from app.models import TaskRequest, TaskResponse
-from app.llm_agent import run_ai_agent
+from app.services.llm_agent import run_ai_agent
 from app.vector_store import (
     add_ai_response,
     get_full_meeting_context
 )
+
+# Task models
+class TaskRequest(BaseModel):
+    meeting_id: str
+    user_id: str
+    command: str
+
+class TaskResponse(BaseModel):
+    task_id: str
+    meeting_id: str
+    user_id: str
+    command: str
+    status: str
+    result: Optional[str] = None
+    error: Optional[str] = None
+    created_at: str
 
 
 # In-memory task list (since no DB)

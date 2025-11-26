@@ -5,6 +5,7 @@ import WebRTCManager from './WebRTCManager';
 import { CONNECTION_STATES } from './webrtc-config';
 import ShadowMode from './ShadowMode';
 
+
 function MeetingPage() {
   const { meetingId } = useParams();
   const [message, setMessage] = useState('');
@@ -185,6 +186,29 @@ function MeetingPage() {
     // Receive room role to coordinate WebRTC offerer
     newSocket.on('room-role', ({ meetingId: mId, isHost: hostFlag }) => {
       if (mId === meetingId) setIsHost(!!hostFlag);
+    });
+
+    // Handle meeting ended by host
+    newSocket.on('meeting-ended', ({ meetingId: mId }) => {
+      if (mId === meetingId) {
+        alert("The host has ended the meeting.");
+        // Cleanup and redirect
+        if (localStream) {
+          localStream.getTracks().forEach(track => track.stop());
+        }
+        if (webrtcManager.current) {
+          webrtcManager.current.cleanup();
+        }
+        if (socket) {
+          socket.disconnect();
+        }
+        window.location.href = '/';
+      }
+    });
+
+    // Handle end meeting errors
+    newSocket.on('end-meeting-error', ({ message }) => {
+      alert(message || "Failed to end meeting");
     });
 
     // If backend refuses unauthenticated join
@@ -482,6 +506,7 @@ function MeetingPage() {
       const clientKey = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const messageData = {
         id: socket.id,
+        username: usernameRef.current || 'User',
         text: message,
         timestamp: timestamp,
         senderLanguage: selectedLanguage,
@@ -506,24 +531,35 @@ function MeetingPage() {
     }
   };
   const endMeeting = () => {
+    // Only allow host to end the meeting
+    if (!isHost) {
+      alert("Only the host can end the meeting.");
+      return;
+    }
+
+    // Confirm before ending
+    if (!window.confirm("Are you sure you want to end the meeting for all participants?")) {
+      return;
+    }
+
+    // Emit end-meeting event to server
+    if (socket && meetingId) {
+      socket.emit('end-meeting', { meetingId });
+    }
+
+    // Cleanup local resources
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+    }
+    if (webrtcManager.current) {
+      webrtcManager.current.cleanup();
+    }
+    
+    // Disconnect and redirect
     if (socket) {
-        socket.disconnect();
-      }
-    
-      // Stop local media tracks
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-      }
-    
-      // Cleanup WebRTC connection
-      if (webrtcManager.current) {
-        webrtcManager.current.cleanup();
-      }
-    
-      // Redirect to home
-      window.location.href = '/';
-  
-    alert("Meeting has ended!");
+      socket.disconnect();
+    }
+    window.location.href = '/';
   };
   
   // removed unused helper
@@ -909,7 +945,9 @@ function MeetingPage() {
           a.click();
           a.remove();
         }} aria-label="Download meeting recording">⬇️</button>
-        <button className="control-btn danger" onClick={endMeeting}>⏹</button>
+        {isHost && (
+          <button className="control-btn danger" onClick={endMeeting} aria-label="End meeting for all participants">⏹ End Meeting</button>
+        )}
       </div>
       {downloadUrl && (
         <div className="center" style={{ marginTop: 8 }}>
@@ -954,7 +992,7 @@ function MeetingPage() {
         {chatMessages.map((msg, index) => (
           <div key={index} style={{ margin: '8px 0', fontSize: '0.95em' }}>
             <div>
-              <strong>{msg.id ? msg.id.substring(0, 5) : 'User'} ({msg.timestamp}):</strong>{' '}
+              <strong>{msg.username || msg.name || (msg.id ? msg.id.substring(0, 5) : 'User')} ({msg.timestamp}):</strong>{' '}
               <span>{msg.text}</span>
             </div>
             {msg.translatedTextEn && (

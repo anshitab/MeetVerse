@@ -107,7 +107,7 @@ export default function ShadowMode({ meetingId, userId }) {
     } catch (err) {
       console.error('Failed to submit command:', err);
       setBackendAvailable(false);
-      alert('Failed to submit command. Make sure Shadow Mode backend is running on port 8000.');
+      alert('Failed to submit command. Make sure Shadow Mode backend is running on port 5000.');
     }
   };
 

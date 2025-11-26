@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+
 
 function ScheduledMeetings({ hostEmail }) {
   const [meetings, setMeetings] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (hostEmail) {
@@ -155,14 +158,31 @@ function ScheduledMeetings({ hostEmail }) {
               )}
 
               <div className="meeting-actions" style={{ marginTop: 12 }}>
-                <a 
-                  href={meeting.meetingLink} 
+                <button 
                   className="button"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  onClick={() => {
+                    // Extract meetingId from meetingLink or use meeting.id/meetingId
+                    const meetingId = meeting.meetingId || meeting.id;
+                    if (meetingId) {
+                      navigate(`/meet/${meetingId}`);
+                    } else {
+                      // Fallback: try to extract from meetingLink
+                      try {
+                        const url = new URL(meeting.meetingLink);
+                        const match = url.pathname.match(/\/meet\/(.+)$/);
+                        if (match) {
+                          navigate(`/meet/${match[1]}`);
+                        } else {
+                          window.open(meeting.meetingLink, '_blank');
+                        }
+                      } catch {
+                        window.open(meeting.meetingLink, '_blank');
+                      }
+                    }
+                  }}
                 >
                   Join Meeting
-                </a>
+                </button>
                 {meeting.status === 'scheduled' && (
                   <button 
                     className="button secondary" 
